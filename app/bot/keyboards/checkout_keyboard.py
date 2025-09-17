@@ -1,11 +1,6 @@
+# app/bot/keyboards/checkout_keyboard.py
 """
 Клавиатуры и предпросмотр для Checkout FSM.
-
-Содержит:
-- build_cancel_kb(include_back): клавиатура «Отмена» + (опц.) «Назад»
-- build_delivery_kb(include_back): выбор способа доставки + (опц.) «Назад»
-- build_confirm_kb(include_back): подтверждение заказа + «Назад»/«Отмена»
-- render_order_preview(...): текстовая сводка заказа перед подтверждением
 """
 from __future__ import annotations
 
@@ -15,15 +10,14 @@ from typing import Iterable, Optional
 from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-# Псевдомодели для подсказок типов (реальные импортировать не нужно)
+
 class _CartItem:
+    """Псевдомодель для подсказок типов (для текста предпросмотра)."""
     product_title: str
     quantity: int
     price: Decimal
     currency: str
 
-
-# ─────────────────────────── Клавиатуры ─────────────────────────── #
 
 def build_cancel_kb(*, include_back: bool = False) -> InlineKeyboardMarkup:
     """
@@ -42,7 +36,6 @@ def build_cancel_kb(*, include_back: bool = False) -> InlineKeyboardMarkup:
 def build_delivery_kb(*, include_back: bool = False) -> InlineKeyboardMarkup:
     """
     Клавиатура выбора способа доставки.
-    Варианты можно расширить под проект.
     """
     kb = InlineKeyboardBuilder()
     kb.button(text="🚚 Курьер", callback_data="delivery:courier")
@@ -55,8 +48,7 @@ def build_delivery_kb(*, include_back: bool = False) -> InlineKeyboardMarkup:
     nav.button(text="🚫 Отмена", callback_data="checkout:cancel")
 
     kb.adjust(1)
-    kb = InlineKeyboardBuilder(markup=kb.as_markup())
-    kb.attach(nav)
+    kb.attach(nav)  # <-- FIX: attach вместо InlineKeyboardBuilder(markup=...)
     return kb.as_markup()
 
 
@@ -74,8 +66,6 @@ def build_confirm_kb(*, include_back: bool = True) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-# ─────────────────────────── Предпросмотр ─────────────────────────── #
-
 def render_order_preview(
     *,
     items: Iterable[_CartItem],
@@ -85,35 +75,18 @@ def render_order_preview(
     address: Optional[str],
     delivery_type: str,
 ) -> str:
-    """
-    Сформировать текст подтверждения заказа.
-
-    Параметры:
-    - items: позиции корзины (title, qty, price)
-    - total: сумма
-    - contact_name: имя клиента
-    - contact_phone: телефон
-    - address: адрес доставки или None (самовывоз)
-    - delivery_type: тип доставки (courier/pickup/post и пр.)
-
-    Возвращает:
-    - Готовую разметку (HTML), пригодную для message.answer(...)
-    """
+    """Сформировать HTML-разметку подтверждения заказа для сообщения."""
     lines = ["<b>Проверьте заказ</b>", ""]
     currency = None
-
-    # Список позиций
     found = False
     for it in items:
         found = True
         currency = currency or getattr(it, "currency", "EUR")
         title = getattr(it, "product_title", "")
         qty = getattr(it, "quantity", 1)
-        price = getattr(it, "price", 0)
         lines.append(f"• {title} × {qty}")
     if not found:
         lines.append("— (пусто) —")
-
     lines += [
         "",
         f"<b>Итого:</b> {total} {currency or 'EUR'}",

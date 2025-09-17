@@ -1,3 +1,4 @@
+# app/bot/keyboards/admin_keyboard.py
 """
 Клавиатуры админ-панели: меню, список заказов и статусы.
 """
@@ -42,15 +43,13 @@ def build_orders_page_kb(*, orders: Iterable[Order], page: int, page_size: int, 
     if has_next:
         nav.button(text="▶️", callback_data=f"admin:orders:page:{page+1}:{page_size}")
 
-    kb = InlineKeyboardBuilder(markup=kb.as_markup())
+    # FIX: прикрепляем билдер навигации, не оборачивая разметку
     kb.attach(nav)
     return kb.as_markup()
 
 
 def build_order_status_kb(*, order_id: int, current: OrderStatus) -> InlineKeyboardMarkup:
-    """
-    Кнопки для смены статуса заказа.
-    """
+    """Кнопки для смены статуса заказа."""
     kb = InlineKeyboardBuilder()
     for status in OrderStatus:
         mark = "✅ " if status == current else ""

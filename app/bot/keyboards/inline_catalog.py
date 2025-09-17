@@ -1,3 +1,4 @@
+# app/bot/keyboards/inline_catalog.py
 """
 Инлайн-клавиатуры каталога и декларации callback-data.
 
@@ -17,7 +18,6 @@ from aiogram.types import InlineKeyboardMarkup
 from app.db.models import Category, Product
 
 
-# --- CallbackData схемы ---
 class CatCB(CallbackData, prefix="cat"):
     """Выбор категории."""
     cat_id: int
@@ -50,7 +50,6 @@ class ProdCB(CallbackData, prefix="prod"):
     product_id: int
 
 
-# --- Клавиатуры ---
 def build_categories_kb(categories: Iterable[Category]) -> InlineKeyboardMarkup:
     """
     Список категорий (кнопка на категорию).
@@ -80,11 +79,13 @@ def build_products_kb(
     Список товаров с пагинацией.
     На каждый товар — кнопка с переходом в карточку.
     Внизу — пагинация (◀️ / ▶️).
+
+    ВАЖНО: не оборачиваем готовый InlineKeyboardMarkup в новый билдер!
+    Склейка билдера с навигацией делается через .attach(nav) до .as_markup().
     """
     kb = InlineKeyboardBuilder()
 
     prods = list(products)
-    # Кнопки товаров с передачей контекста возврата
     for p in prods:
         price = f"{p.price} {p.currency}"
         kb.button(
@@ -115,8 +116,7 @@ def build_products_kb(
         )
 
     kb.adjust(1)
-    kb = InlineKeyboardBuilder(markup=kb.as_markup())
-    kb.attach(nav)
+    kb.attach(nav)  # <-- фикс: прикрепляем билдер, не InlineKeyboardMarkup
     return kb.as_markup()
 
 
@@ -131,9 +131,6 @@ def build_product_card_kb(
     Параметры:
     - product_id: ID товара (для «В корзину»).
     - back_to: ProdListCB с контекстом возврата (категория/страница); если не задан — будет noop.
-
-    Возвращает:
-    - InlineKeyboardMarkup с кнопками «В корзину» и «Назад к товарам».
     """
     kb = InlineKeyboardBuilder()
     kb.button(text="➕ В корзину", callback_data=f"cart:add:{product_id}")
