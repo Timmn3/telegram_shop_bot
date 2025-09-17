@@ -1,40 +1,21 @@
 """
 Модуль админ-панели внутри бота.
 
-Назначение
----------
-Делает доступными базовые административные операции через Telegram:
-- Меню администратора (/admin).
-- Просмотр заказов с пагинацией и сменой статусов.
-- Пошаговое добавление товара (FSM) с возможностью загрузить фото (telegram_file_id).
+Добавлено:
+- Цикл добавления нескольких фото в FSM создания товара.
+  На шаге «Фото» админ может прислать подряд несколько изображений (telegram_file_id).
+  Завершение ввода фото — текстом «готово» (или '-' чтобы пропустить целиком).
+  Сохранение фото в ProductImage с корректным sort_order.
 
-Доступ
-------
-Все действия защищены фильтром AdminOnly: допускаются только Telegram ID,
-указанные в settings.ADMIN_ID_LIST.
-
-Основные сценарии
------------------
-1) /admin — показывает меню с кнопками:
-   - «Добавить товар» → запускает FSM AddProductSG
-   - «Заказы» → открывает первую страницу заказов (последние)
-
+Сценарии:
+1) /admin — меню: «Добавить товар», «Заказы»
 2) Добавление товара (FSM):
-   title → price → category_id → description → photo → active → confirm
-   На шаге photo поддерживаем 2 варианта:
-   - Пользователь отправляет фото (берём message.photo[-1].file_id).
-   - Пользователь отправляет «-», чтобы пропустить фото.
+   title → price → category_id → description → photos(loop) → active → confirm → create
+3) Заказы: список, пагинация, смена статуса.
 
-3) Заказы:
-   - Пагинация кнопками «◀️/▶️».
-   - Смена статуса заказа через набор инлайн-кнопок.
-
-Архитектура
------------
-- Репозитории: OrderRepo, ProductRepo, CategoryRepo.
-- Сервисы: order_service (опционально — где удобно).
-- Сессии: AsyncSessionFactory().
+Зависимости: OrderRepo, ProductRepo, CategoryRepo; для фото сохраняем ProductImage через session.add(...)
 """
+from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 from typing import Optional, List
@@ -63,12 +44,7 @@ admin_router = Router(name="admin")
 #  Фильтр «только админы»
 # =======================
 class AdminOnly(BaseFilter):
-    """
-    Пропускает только тех пользователей, чьи Telegram ID перечислены в settings.ADMIN_ID_LIST.
-
-    Возвращает:
-        bool: True — если доступ разрешён, иначе False.
-    """
+    """Пропускает только Telegram ID из settings.ADMIN_ID_LIST."""
     async def __call__(self, obj: Message | CallbackQuery) -> bool:
         uid: Optional[int] = None
         if isinstance(obj, Message):
@@ -83,32 +59,20 @@ class AdminOnly(BaseFilter):
 # ==========
 @admin_router.message(AdminOnly(), Command("admin"))
 async def cmd_admin(message: Message) -> None:
-    """
-    Показать главное меню администратора.
-
-    Клавиатура:
-        - «➕ Добавить товар»
-        - «📦 Заказы»
-    """
+    """Показать главное меню администратора."""
     await message.answer("⚙️ Админ-панель:", reply_markup=build_admin_menu_kb())
     logger.debug("Админ %s открыл меню", message.from_user.id if message.from_user else None)
 
 
 @admin_router.callback_query(AdminOnly(), F.data == "admin:cmd:add")
 async def cb_admin_cmd_add(callback: CallbackQuery, state: FSMContext) -> None:
-    """
-    Обработчик кнопки «Добавить товар» в меню.
-    Делегирует запуск на функцию FSM-старта (ниже).
-    """
+    """Кнопка «Добавить товар» → запуск FSM."""
     await add_product_start(callback, state)
 
 
 @admin_router.callback_query(AdminOnly(), F.data == "admin:cmd:orders")
 async def cb_admin_cmd_orders(callback: CallbackQuery) -> None:
-    """
-    Обработчик кнопки «Заказы» в меню.
-    Открывает первую страницу списка заказов.
-    """
+    """Кнопка «Заказы» → открываем список заказов."""
     await show_orders_page(callback, page=0, page_size=10)
 
 
@@ -116,19 +80,7 @@ async def cb_admin_cmd_orders(callback: CallbackQuery) -> None:
 #  Список заказов и пагинация
 # ============================
 async def show_orders_page(cb_or_msg: CallbackQuery | Message, *, page: int, page_size: int) -> None:
-    """
-    Показать страницу заказов администратору.
-
-    Параметры:
-        cb_or_msg: объект CallbackQuery или Message, откуда инициирован показ.
-        page (int): номер страницы (0..N).
-        page_size (int): количество элементов на страницу.
-
-    Действия:
-        - Загружаем заказы из БД (OrderRepo.list_for_admin).
-        - Строим клавиатуру с позициями и навигацией.
-        - Редактируем сообщение (если callback) или отправляем новое (если message).
-    """
+    """Показать страницу заказов администратору."""
     offset = max(0, page) * page_size
     async with AsyncSessionFactory() as session:
         orders: List[Order] = await OrderRepo.list_for_admin(session, limit=page_size, offset=offset)
@@ -143,12 +95,7 @@ async def show_orders_page(cb_or_msg: CallbackQuery | Message, *, page: int, pag
 
 @admin_router.callback_query(AdminOnly(), F.data.startswith("admin:orders:page:"))
 async def admin_orders_page(callback: CallbackQuery) -> None:
-    """
-    Обработчик кнопок пагинации заказов.
-
-    Формат callback.data:
-        "admin:orders:page:<page>:<page_size>"
-    """
+    """Пагинация заказов: admin:orders:page:<page>:<page_size>."""
     try:
         _, _, _, p, sz = callback.data.split(":")
         page = int(p)
@@ -161,17 +108,7 @@ async def admin_orders_page(callback: CallbackQuery) -> None:
 
 @admin_router.callback_query(AdminOnly(), F.data.startswith("admin:order:status:"))
 async def admin_order_set_status(callback: CallbackQuery) -> None:
-    """
-    Сменить статус заказа.
-
-    Формат callback.data:
-        "admin:order:status:<order_id>:<status>"
-
-    Действия:
-        - Парсим order_id и статус.
-        - Вызываем OrderRepo.set_status().
-        - Сообщаем об успешной смене и показываем клавиатуру статусов на текущее значение.
-    """
+    """Смена статуса заказа: admin:order:status:<order_id>:<status>."""
     try:
         _, _, _, oid, status_str = callback.data.split(":")
         order_id = int(oid)
@@ -202,27 +139,20 @@ class AddProductSG(StatesGroup):
     Состояния FSM добавления товара.
 
     Поток:
-        title -> price -> category_id -> description -> photo -> active -> confirm
+        title -> price -> category_id -> description -> photos(loop) -> active -> confirm
     """
     title = State()
     price = State()
     category_id = State()
     description = State()
-    photo = State()
+    photos = State()   # <-- цикл добавления фото
     active = State()
     confirm = State()
 
 
 @admin_router.message(AdminOnly(), Command("admin_add_product"))
 async def add_product_start_cmd(message: Message, state: FSMContext) -> None:
-    """
-    Запуск FSM добавления товара командой.
-
-    Действия:
-        - Сбрасываем предыдущее состояние.
-        - Ставим состояние title.
-        - Просим ввести название.
-    """
+    """Запуск FSM добавления товара командой."""
     await state.clear()
     await state.set_state(AddProductSG.title)
     await message.answer("Введите название товара:")
@@ -230,11 +160,7 @@ async def add_product_start_cmd(message: Message, state: FSMContext) -> None:
 
 @admin_router.callback_query(AdminOnly(), F.data == "admin:add_product")
 async def add_product_start(callback: CallbackQuery, state: FSMContext) -> None:
-    """
-    Запуск FSM добавления товара из инлайн-меню.
-
-    Эквивалентно команде /admin_add_product.
-    """
+    """Запуск FSM добавления товара из инлайн-меню."""
     await state.clear()
     await state.set_state(AddProductSG.title)
     await callback.message.answer("Введите название товара:")
@@ -243,12 +169,7 @@ async def add_product_start(callback: CallbackQuery, state: FSMContext) -> None:
 
 @admin_router.message(AdminOnly(), AddProductSG.title)
 async def add_product_title(message: Message, state: FSMContext) -> None:
-    """
-    Шаг FSM: название товара.
-
-    Валидация:
-        - Название не должно быть пустым.
-    """
+    """Шаг FSM: название товара."""
     title = (message.text or "").strip()
     if not title:
         await message.answer("Название не должно быть пустым. Введите ещё раз:")
@@ -260,13 +181,7 @@ async def add_product_title(message: Message, state: FSMContext) -> None:
 
 @admin_router.message(AdminOnly(), AddProductSG.price)
 async def add_product_price(message: Message, state: FSMContext) -> None:
-    """
-    Шаг FSM: цена товара.
-
-    Валидация:
-        - Цена — положительный Decimal.
-        - Разрешаем ввод через запятую (заменим на точку).
-    """
+    """Шаг FSM: цена товара (Decimal, > 0)."""
     raw = (message.text or "").replace(",", ".").strip()
     try:
         price = Decimal(raw)
@@ -278,7 +193,7 @@ async def add_product_price(message: Message, state: FSMContext) -> None:
     await state.update_data(price=str(price))
     await state.set_state(AddProductSG.category_id)
 
-    # Выведем корневые категории, если есть
+    # Показать корневые категории
     async with AsyncSessionFactory() as session:
         roots = await CategoryRepo.list_root(session)
     if roots:
@@ -290,14 +205,7 @@ async def add_product_price(message: Message, state: FSMContext) -> None:
 
 @admin_router.message(AdminOnly(), AddProductSG.category_id)
 async def add_product_category(message: Message, state: FSMContext) -> None:
-    """
-    Шаг FSM: категория.
-
-    Валидация:
-        - Целое число >= 0.
-        - Если 0 — сохраняем без категории.
-        - Иначе проверяем, что категория существует.
-    """
+    """Шаг FSM: категория ID (целое число; 0 — без категории)."""
     raw = (message.text or "").strip()
     if not raw.isdigit():
         await message.answer("ID категории должен быть числом. Повторите ввод:")
@@ -315,25 +223,72 @@ async def add_product_category(message: Message, state: FSMContext) -> None:
 
 @admin_router.message(AdminOnly(), AddProductSG.description)
 async def add_product_description(message: Message, state: FSMContext) -> None:
+    """Шаг FSM: описание (или '-' — пропустить). После — цикл фото."""
     desc = None if (message.text or "").strip() == "-" else (message.text or "").strip()
     await state.update_data(description=desc)
-    await state.set_state(AddProductSG.active)
-    await message.answer("Активировать товар? (да/нет):")
+    await state.set_state(AddProductSG.photos)
+    await state.update_data(_photos=[])  # временный буфер фото (telegram_file_id)
+    await message.answer(
+        "Пришлите фото товара (можно несколько подряд). Когда закончите — отправьте <b>«готово»</b>.\n"
+        "Или отправьте '-' чтобы пропустить добавление фото."
+    )
+
+
+@admin_router.message(AdminOnly(), AddProductSG.photos, F.text)
+async def add_product_photos_text_control(message: Message, state: FSMContext) -> None:
+    """
+    Управляющие ответы на шаге фото:
+    - 'готово' → переходим к active
+    - '-' → пропускаем фото, переходим к active
+    - любое другое текстовое — подсказка
+    """
+    txt = (message.text or "").strip().lower()
+    if txt in {"готово", "done", "end", "finish"} or txt == "-":
+        await state.set_state(AddProductSG.active)
+        photos = (await state.get_data()).get("_photos", [])
+        if photos:
+            await message.answer(f"Фото добавлены: {len(photos)} шт.\nАктивировать товар? (да/нет):")
+        else:
+            await message.answer("Фото пропущены.\nАктивировать товар? (да/нет):")
+        return
+
+    await message.answer("Пришлите фото, либо «готово» для завершения, либо '-' чтобы пропустить.")
+
+
+@admin_router.message(AdminOnly(), AddProductSG.photos, F.content_type == ContentType.PHOTO)
+async def add_product_photos_collect(message: Message, state: FSMContext) -> None:
+    """
+    Принимаем фото и складываем их file_id во временный список в FSM.
+    Порядок сохранения соответствует sort_order.
+    """
+    if not message.photo:
+        await message.answer("Не удалось получить фото. Пришлите изображение ещё раз.")
+        return
+
+    file_id = message.photo[-1].file_id
+    data = await state.get_data()
+    photos: List[str] = list(data.get("_photos", []))
+    photos.append(file_id)
+    await state.update_data(_photos=photos)
+    await message.answer(f"Фото принято ✅ (всего: {len(photos)}). Пришлите ещё или «готово».")
 
 
 @admin_router.message(AdminOnly(), AddProductSG.active)
 async def add_product_active(message: Message, state: FSMContext) -> None:
+    """Шаг FSM: активен (да/нет)."""
     txt = (message.text or "").strip().lower()
     is_active = txt in {"да", "yes", "y", "true", "1", "ага", "включить"}
     await state.update_data(is_active=is_active)
 
     data = await state.get_data()
+    photo_count = len(data.get("_photos", []))
     preview = (
         "<b>Подтверждение:</b>\n"
         f"Название: <b>{data['title']}</b>\n"
         f"Цена: <b>{data['price']}</b>\n"
         f"Категория ID: <b>{data.get('category_id') or '—'}</b>\n"
         f"Описание: <i>{data.get('description') or '—'}</i>\n"
+        f"Фото: <b>{photo_count}</b> шт.\n"
         f"Активен: <b>{'Да' if data['is_active'] else 'Нет'}</b>\n\n"
         "Отправьте «да» для подтверждения или «нет» для отмены."
     )
@@ -343,6 +298,7 @@ async def add_product_active(message: Message, state: FSMContext) -> None:
 
 @admin_router.message(AdminOnly(), AddProductSG.confirm)
 async def add_product_confirm(message: Message, state: FSMContext) -> None:
+    """Финальное подтверждение: создаём Product и ProductImage*."""
     ok = (message.text or "").strip().lower() in {"да", "yes", "y"}
     if not ok:
         await state.clear()
@@ -350,6 +306,8 @@ async def add_product_confirm(message: Message, state: FSMContext) -> None:
         return
 
     data = await state.get_data()
+    photos: List[str] = list(data.get("_photos", []))
+
     async with AsyncSessionFactory() as session:
         await session.begin()
         product = await ProductRepo.create(
@@ -361,5 +319,10 @@ async def add_product_confirm(message: Message, state: FSMContext) -> None:
             description=data.get("description"),
             is_active=bool(data.get("is_active", True)),
         )
+        # Сохранить фото в ProductImage с sort_order
+        for idx, file_id in enumerate(photos):
+            session.add(ProductImage(product_id=product.id, telegram_file_id=file_id, sort_order=idx))
+        await session.commit()
+
     await state.clear()
-    await message.answer(f"✅ Товар создан: <b>{product.title}</b>")
+    await message.answer(f"✅ Товар создан: <b>{product.title}</b>\nФото: {len(photos)} шт.")
