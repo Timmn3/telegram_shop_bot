@@ -14,6 +14,7 @@ from typing import List
 
 from aiogram import Router, F
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery
 
 from app.core.logging_cfg import logger
@@ -150,10 +151,9 @@ async def cb_cart_clear(callback: CallbackQuery) -> None:
 
 
 @cart_router.callback_query(F.data == "checkout:start")
-async def cb_checkout_start(callback: CallbackQuery) -> None:
+async def cb_checkout_start(callback: CallbackQuery, state: FSMContext) -> None:
     """
-    Переход к оформлению заказа (заглушка).
-    На следующем шаге подключим FSM: имя → телефон → адрес → подтверждение.
+    Старт оформления заказа (делегируем в checkout.py).
     """
-    await callback.answer("Переходим к оформлению…", show_alert=False)
-    await callback.message.answer("📝 Оформление заказа: скоро добавим шаги (имя, телефон, адрес).")
+    from app.bot.handlers.checkout import checkout_start  # импортируем функцию-старт из checkout.py
+    await checkout_start(callback, state)
