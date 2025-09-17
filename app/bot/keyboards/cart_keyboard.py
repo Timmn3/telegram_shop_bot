@@ -4,64 +4,73 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Iterable
+from typing import List
 
-from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.types import InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from app.db.models import CartItem
 
+NOOP = "noop"
 
-def render_cart_text(items: Iterable[CartItem], total: Decimal) -> str:
+
+# ─────────────────────────── Утилиты отображения ─────────────────────────── #
+
+def _crop_title(title: str, limit: int = 24) -> str:
     """
-    Формирует текст корзины с позициями и общей суммой.
+    Обрезает длинные названия товаров, чтобы строка не «распухала» в одну кнопку.
+    Пример: "Очень длинное название…" → "Очень длинное назв…"
     """
-    items = list(items)
+    t = (title or "").strip()
+    if len(t) <= limit:
+        return t
+    return t[: limit - 1].rstrip() + "…"
+
+
+def render_cart_text(items: List[CartItem], total: Decimal) -> str:
+    """
+    Собирает текст корзины (шапка + позиции + итог).
+    Не зависит от клавиатуры.
+    """
     if not items:
-        return "🛒 Ваша корзина пуста."
+        return "🧺 Корзина пуста."
 
-    lines = ["🛒 <b>Корзина</b>:", ""]
-    currency = items[0].product.currency if items and items[0].product else "RUB"
-
+    lines = ["🧺 <b>Корзина:</b>"]
     for it in items:
-        title = it.product.title if it.product else f"Товар #{it.product_id}"
-        item_sum = (it.price_at_added or Decimal("0")) * it.quantity
-        lines.append(f"• {title} — {it.quantity} шт × {it.price_at_added} = <b>{item_sum}</b> {currency}")
-    lines.append("")
-    lines.append(f"Итого: <b>{total}</b> {currency}")
+        item_total = (it.price_at_added or Decimal("0")) * it.quantity
+        lines.append(
+            f"• {it.product.title} — {it.quantity} шт × {it.price_at_added} = <b>{item_total}</b> {it.product.currency}"
+        )
+    lines.append(f"\nИтого: <b>{total}</b> {items[0].product.currency}")
     return "\n".join(lines)
 
 
-def build_cart_keyboard(items: Iterable[CartItem]) -> InlineKeyboardMarkup:
+# ─────────────────────────── Основная клавиатура ─────────────────────────── #
+
+def build_cart_keyboard(items: List[CartItem]) -> InlineKeyboardMarkup:
     """
-    Клавиатура корзины:
-    - Для каждой позиции: [-] qty [+] и 🗑 удалить
-    - Внизу: Очистить | Оформить
+    Построить инлайн-клавиатуру корзины c компактными строками по товару.
+    Каждая позиция занимает одну строку: [• title] [➖] [qty] [➕] [🗑]
+    Внизу — отдельные широкие кнопки «Очистить» и «Оформить».
+    Для пустой корзины — только «⬅️ В каталог».
     """
-    items = list(items)
-    kb = InlineKeyboardBuilder()
+    kb: list[list[InlineKeyboardButton]] = []
 
     if not items:
-        # Пустая корзина: только кнопка "Назад в меню" / "Каталог"
-        kb.button(text="⬅️ В каталог", callback_data="cart:back_to_menu")
-        kb.adjust(1)
-        return kb.as_markup()
+        kb.append([InlineKeyboardButton(text="⬅️ В каталог", callback_data="cart:back_to_menu")])
+        return InlineKeyboardMarkup(inline_keyboard=kb)
 
-    # Кнопки по позициям
     for it in items:
-        title = it.product.title if it.product else f"Товар #{it.product_id}"
-        # отдельная строка — заголовок товара
-        kb.button(text=f"• {title}", callback_data="noop")
-        # строка управления количеством
-        kb.button(text="➖", callback_data=f"cart:dec:{it.product_id}")
-        kb.button(text=f"{it.quantity} шт", callback_data="noop")
-        kb.button(text="➕", callback_data=f"cart:inc:{it.product_id}")
-        # удаление
-        kb.button(text="🗑 Удалить", callback_data=f"cart:del:{it.product_id}")
-        kb.adjust(1, 3, 1)  # по строкам: заголовок / - qty + / удалить
+        pid = it.product_id
+        title_btn = InlineKeyboardButton(text=f"• {_crop_title(it.product.title)}", callback_data=NOOP)
+        dec_btn = InlineKeyboardButton(text="➖", callback_data=f"cart:dec:{pid}")
+        qty_btn = InlineKeyboardButton(text=str(it.quantity), callback_data=NOOP)
+        inc_btn = InlineKeyboardButton(text="➕", callback_data=f"cart:inc:{pid}")
+        del_btn = InlineKeyboardButton(text="🗑", callback_data=f"cart:del:{pid}")
+        kb.append([title_btn, dec_btn, qty_btn, inc_btn, del_btn])
 
-    # Низ: очистить / оформить
-    kb.button(text="🧹 Очистить", callback_data="cart:clear")
-    kb.button(text="🛍 Оформить", callback_data="checkout:start")
-    kb.adjust(2)
-    return kb.as_markup()
+    # Разделяем визуально товары и нижний блок
+    # (телеграм не имеет «разделителей», просто новой строкой ниже добавим большие кнопки)
+    kb.append([InlineKeyboardButton(text="🧹 Очистить корзину", callback_data="cart:clear")])
+    kb.append([InlineKeyboardButton(text="🛍 Оформить", callback_data="checkout:start")])
+
+    return InlineKeyboardMarkup(inline_keyboard=kb)
