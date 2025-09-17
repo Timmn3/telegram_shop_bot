@@ -9,7 +9,6 @@ from typing import List
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# ВАЖНО: берём абсолютный путь к .env из BASE_DIR
 from app.core.paths import BASE_DIR
 
 
@@ -23,7 +22,6 @@ class Settings(BaseSettings):
     LOG_FILE_NAME: str = Field(default="bot.log", description="Имя файла логов в папке logs/")
 
     model_config = SettingsConfigDict(
-        # Абсолютный путь к .env => не зависит от рабочей директории запуска
         env_file=str(BASE_DIR / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",

@@ -26,7 +26,8 @@ async def cmd_start(message: Message) -> None:
     """
     text = (
         "👋 Привет! Это магазин в Telegram.\n"
-        "Посмотреть каталог: /menu"
+        "Посмотреть каталог: /menu\n"
+        "Открыть корзину: /cart"
     )
     await message.answer(text)
 
@@ -43,3 +44,6 @@ async def cmd_menu(message: Message) -> None:
     kb = build_categories_kb(categories)
     await message.answer("🗂 Выберите категорию:", reply_markup=kb)
     logger.debug("Пользователь %s открыл меню каталога", message.from_user.id if message.from_user else None)
+
+
+

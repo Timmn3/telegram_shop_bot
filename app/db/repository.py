@@ -2,6 +2,7 @@
 Repository layer (доступ к БД и транзакции) для tg_shop_bot.
 
 Покрывает:
+- Пользователи (ленивое создание при первом обращении к корзине).
 - Категории и товары (чтение/CRUD).
 - Корзину (создание/получение активной, позиции, подсчёт суммы).
 - Заказ (создание из корзины) с генерацией order_number.
@@ -10,7 +11,6 @@ Repository layer (доступ к БД и транзакции) для tg_shop_b
 - Все операции рассчитаны на использование с AsyncSession.
 - Денежные суммы считаются через Decimal.
 - Генерация номера заказа: ORDER-YYYYMMDD-<SEQ:id>
-
 """
 from __future__ import annotations
 
@@ -23,7 +23,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from app.db.models import (
-    Base,
     User,
     Category,
     Product,
@@ -35,6 +34,30 @@ from app.db.models import (
     CartStatus,
     OrderStatus,
 )
+
+# -------- User --------
+class UserRepo:
+    """Репозиторий пользователей."""
+
+    @staticmethod
+    async def get(session: AsyncSession, user_id: int) -> Optional[User]:
+        """Получить пользователя по Telegram ID."""
+        res = await session.execute(select(User).where(User.id == user_id))
+        return res.scalar_one_or_none()
+
+    @staticmethod
+    async def get_or_create(session: AsyncSession, *, user_id: int, full_name: str | None = None) -> User:
+        """
+        Гарантирует наличие пользователя:
+        - если есть — возвращает;
+        - если нет — создаёт запись c переданным full_name (может быть None).
+        """
+        user = await UserRepo.get(session, user_id)
+        if user is None:
+            user = User(id=user_id, full_name=full_name)
+            session.add(user)
+            await session.flush()
+        return user
 
 
 # -------- Category --------
@@ -100,8 +123,10 @@ class ProductRepo:
         return result.scalar_one_or_none()
 
     @staticmethod
-    async def list_by_category(session: AsyncSession, *, category_id: int | None, limit: int = 20, offset: int = 0) -> \
-    List[Product]:
+    async def list_by_category(
+        session: AsyncSession, *,
+        category_id: int | None, limit: int = 20, offset: int = 0
+    ) -> List[Product]:
         """Список активных товаров по категории (или без фильтра, если category_id=None)."""
         stmt = select(Product).where(Product.is_active.is_(True))
         if category_id is not None:
@@ -112,15 +137,15 @@ class ProductRepo:
 
     @staticmethod
     async def create(
-            session: AsyncSession,
-            *,
-            title: str,
-            price: Decimal,
-            currency: str = "EUR",
-            category_id: int | None = None,
-            description: str | None = None,
-            is_active: bool = True,
-            image_urls: Iterable[str] | None = None,
+        session: AsyncSession,
+        *,
+        title: str,
+        price: Decimal,
+        currency: str = "EUR",
+        category_id: int | None = None,
+        description: str | None = None,
+        is_active: bool = True,
+        image_urls: Iterable[str] | None = None,
     ) -> Product:
         """Создать товар и, при необходимости, изображения."""
         obj = Product(
@@ -166,7 +191,11 @@ class CartRepo:
 
         Важно:
         - Допускается ровно одна активная корзина на пользователя.
+        - Перед созданием корзины гарантируем наличие пользователя (FK на users.id).
         """
+        # Гарантируем, что пользователь существует (иначе FK упадёт)
+        await UserRepo.get_or_create(session, user_id=user_id)
+
         stmt = select(Cart).where(Cart.user_id == user_id, Cart.status == CartStatus.ACTIVE)
         result = await session.execute(stmt)
         cart = result.scalar_one_or_none()
@@ -209,8 +238,7 @@ class CartRepo:
         return item
 
     @staticmethod
-    async def set_quantity(session: AsyncSession, *, user_id: int, product_id: int, quantity: int) -> Optional[
-        CartItem]:
+    async def set_quantity(session: AsyncSession, *, user_id: int, product_id: int, quantity: int) -> Optional[CartItem]:
         """Установить точное количество позиции (quantity >= 0). Если 0 — удалить позицию."""
         cart = await CartRepo.get_or_create_active_cart(session, user_id=user_id)
         stmt = select(CartItem).where(CartItem.cart_id == cart.id, CartItem.product_id == product_id)
@@ -268,7 +296,6 @@ class CartRepo:
         )
         result = await session.execute(stmt)
         total = result.scalar_one()
-        # SQLAlchemy может вернуть Decimal или Numeric; явно приводим к Decimal
         return Decimal(total)
 
 
@@ -284,25 +311,29 @@ class OrderRepo:
 
     @staticmethod
     async def create_from_cart(
-            session: AsyncSession,
-            *,
-            user_id: int,
-            contact_name: str,
-            contact_phone: str,
-            address: str | None,
-            delivery_type: str | None,
-            currency: str = "EUR",
+        session: AsyncSession,
+        *,
+        user_id: int,
+        contact_name: str,
+        contact_phone: str,
+        address: str | None,
+        delivery_type: str | None,
+        currency: str = "EUR",
     ) -> Order:
         """
         Создать заказ из текущей активной корзины пользователя.
 
         Алгоритм:
+        - Гарантировать наличие пользователя (на всякий случай).
         - Получить активную корзину и её позиции.
         - Посчитать сумму.
         - Создать Order (без order_number), flush() -> получить id.
         - Проставить order_number и создать OrderItem по каждой позиции.
         - Очистить корзину и перевести её статус в ORDERED.
         """
+        # 0) Гарантия существования пользователя
+        await UserRepo.get_or_create(session, user_id=user_id)
+
         # 1) Корзина и позиции
         cart = await CartRepo.get_or_create_active_cart(session, user_id=user_id)
         items = await CartRepo.get_items(session, user_id=user_id)
