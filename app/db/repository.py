@@ -13,7 +13,7 @@ Repository layer (доступ к БД и транзакции) для tg_shop_b
 - Генерация номера заказа: ORDER-YYYYMMDD-<SEQ:id>
 """
 from __future__ import annotations
-
+import uuid
 import datetime
 from decimal import Decimal
 from typing import Iterable, List, Optional
@@ -348,6 +348,7 @@ class OrderRepo:
         # 2) Сумма
         total = await CartRepo.subtotal(session, user_id=user_id)
 
+        temp_number = f"TEMP-{uuid.uuid4().hex[:12]}"
         # 3) Создаём заказ
         order = Order(
             user_id=user_id,
@@ -359,6 +360,7 @@ class OrderRepo:
             address=address,
             delivery_type=delivery_type,
             created_at=datetime.datetime.utcnow(),
+            order_number=temp_number,
         )
         session.add(order)
         await session.flush()  # получаем order.id
