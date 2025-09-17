@@ -4,11 +4,12 @@
 Включает:
 - CatCB: выбор категории.
 - ProdListCB: пагинация товаров (категория, страница, размер страницы).
-- ProdCB: переход к карточке товара.
+- ProdOpenCB: открытие карточки товара с контекстом возвращения.
+- ProdCB: (совместимость) открытие карточки товара без контекста.
 """
 from __future__ import annotations
 
-from typing import Iterable
+from typing import Iterable, Optional
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.filters.callback_data import CallbackData
 from aiogram.types import InlineKeyboardMarkup
@@ -29,8 +30,23 @@ class ProdListCB(CallbackData, prefix="plist"):
     page_size: int
 
 
+class ProdOpenCB(CallbackData, prefix="prodo"):
+    """
+    Открыть карточку товара с контекстом:
+    - product_id — товар,
+    - cat_id/page/page_size — чтобы знать, куда вернуться кнопкой «Назад к товарам».
+    """
+    product_id: int
+    cat_id: int
+    page: int
+    page_size: int
+
+
 class ProdCB(CallbackData, prefix="prod"):
-    """Открыть карточку товара."""
+    """
+    Открыть карточку товара (устаревший вариант без контекста).
+    Оставлен для совместимости, но в списке товаров использовать ProdOpenCB.
+    """
     product_id: int
 
 
@@ -67,21 +83,36 @@ def build_products_kb(
     """
     kb = InlineKeyboardBuilder()
 
-    # Кнопки товаров
-    for p in products:
+    prods = list(products)
+    # Кнопки товаров с передачей контекста возврата
+    for p in prods:
         price = f"{p.price} {p.currency}"
-        kb.button(text=f"🛒 {p.title} — {price}", callback_data=ProdCB(product_id=p.id))
+        kb.button(
+            text=f"🛒 {p.title} — {price}",
+            callback_data=ProdOpenCB(
+                product_id=p.id,
+                cat_id=category_id,
+                page=page,
+                page_size=page_size,
+            ),
+        )
 
-    if not list(products):
+    if not prods:
         kb.button(text="Нет товаров", callback_data="noop")
 
     # Пагинация
     nav = InlineKeyboardBuilder()
     if has_prev:
-        nav.button(text="◀️", callback_data=ProdListCB(cat_id=category_id, page=page - 1, page_size=page_size))
+        nav.button(
+            text="◀️",
+            callback_data=ProdListCB(cat_id=category_id, page=page - 1, page_size=page_size),
+        )
     nav.button(text=f"Стр. {page + 1}", callback_data="noop")
     if has_next:
-        nav.button(text="▶️", callback_data=ProdListCB(cat_id=category_id, page=page + 1, page_size=page_size))
+        nav.button(
+            text="▶️",
+            callback_data=ProdListCB(cat_id=category_id, page=page + 1, page_size=page_size),
+        )
 
     kb.adjust(1)
     kb = InlineKeyboardBuilder(markup=kb.as_markup())
@@ -89,13 +120,26 @@ def build_products_kb(
     return kb.as_markup()
 
 
-def build_product_card_kb(*, product_id: int) -> InlineKeyboardMarkup:
+def build_product_card_kb(
+    *,
+    product_id: int,
+    back_to: Optional[ProdListCB] = None,
+) -> InlineKeyboardMarkup:
     """
     Кнопки под карточкой товара.
-    Сейчас: только "В корзину" (добавим обработчик в модуле корзины на следующем шаге).
+
+    Параметры:
+    - product_id: ID товара (для «В корзину»).
+    - back_to: ProdListCB с контекстом возврата (категория/страница); если не задан — будет noop.
+
+    Возвращает:
+    - InlineKeyboardMarkup с кнопками «В корзину» и «Назад к товарам».
     """
     kb = InlineKeyboardBuilder()
     kb.button(text="➕ В корзину", callback_data=f"cart:add:{product_id}")
-    kb.button(text="⬅️ Назад к товарам", callback_data="noop")
+    if back_to is not None:
+        kb.button(text="⬅️ Назад к товарам", callback_data=back_to.pack())
+    else:
+        kb.button(text="⬅️ Назад к товарам", callback_data="noop")
     kb.adjust(1, 1)
     return kb.as_markup()
