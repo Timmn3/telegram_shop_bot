@@ -1,13 +1,15 @@
 """
 Общие хэндлеры:
-- /start — приветствие, сохранение пользователя при первом входе (лениво, позже добавим)
+- /start — приветствие
 - /menu — открыть корневые категории каталога
+- callback "cart:back_to_menu" — вернуться в каталог из корзины
+- callback "noop" — заглушка для неактивных кнопок
 """
 from __future__ import annotations
 
 from aiogram import Router, F
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import Message, CallbackQuery
 
 from app.core.logging_cfg import logger
 from app.db.session import AsyncSessionFactory
@@ -19,11 +21,7 @@ common_router = Router(name="common")
 
 @common_router.message(Command("start"))
 async def cmd_start(message: Message) -> None:
-    """
-    Команда /start:
-    - Приветствие пользователя;
-    - Предлагаем открыть меню каталога.
-    """
+    """Приветствие и подсказки."""
     text = (
         "👋 Привет! Это магазин в Telegram.\n"
         "Посмотреть каталог: /menu\n"
@@ -34,16 +32,26 @@ async def cmd_start(message: Message) -> None:
 
 @common_router.message(Command("menu"))
 async def cmd_menu(message: Message) -> None:
-    """
-    Команда /menu:
-    - Показывает список корневых категорий с интерактивной клавиатурой.
-    """
+    """Показать корневые категории каталога."""
     async with AsyncSessionFactory() as session:
         categories = await list_root_categories(session)
-
     kb = build_categories_kb(categories)
     await message.answer("🗂 Выберите категорию:", reply_markup=kb)
     logger.debug("Пользователь %s открыл меню каталога", message.from_user.id if message.from_user else None)
 
 
+@common_router.callback_query(F.data == "cart:back_to_menu")
+async def cb_back_to_menu(callback: CallbackQuery) -> None:
+    """Вернуться в каталог (из пустой корзины и др.)."""
+    async with AsyncSessionFactory() as session:
+        categories = await list_root_categories(session)
+    kb = build_categories_kb(categories)
+    if callback.message:
+        await callback.message.edit_text("🗂 Выберите категорию:", reply_markup=kb)
+    await callback.answer()
 
+
+@common_router.callback_query(F.data == "noop")
+async def cb_noop(callback: CallbackQuery) -> None:
+    """Ничего не делаем — тихо закрываем всплывашку."""
+    await callback.answer()

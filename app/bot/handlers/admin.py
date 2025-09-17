@@ -1,18 +1,19 @@
 """
 Админ-панель внутри бота.
 
-Команды:
-- /admin — меню администратора
-- /admin_add_product — пошаговое добавление товара (FSM)
-- /admin_orders — список заказов с кнопками смены статуса
-- /admin_product_toggle <product_id> — переключить активность товара (вкл/выкл)
+Возможности:
+- /admin — меню админа
+- Добавление товара (FSM)
+- Список заказов с пагинацией
+- Смена статуса заказа
+- Переключение активности товара (команда)
 
-Доступ ограничен: только ID из settings.ADMIN_ID_LIST.
+Доступ ограничен по settings.ADMIN_ID_LIST.
 """
 from __future__ import annotations
 
-from decimal import Decimal
-from typing import Optional
+from decimal import Decimal, InvalidOperation
+from typing import Optional, List
 
 from aiogram import Router, F
 from aiogram.filters import Command, BaseFilter
@@ -23,9 +24,8 @@ from aiogram.types import Message, CallbackQuery
 from app.core.config import settings
 from app.core.logging_cfg import logger
 from app.db.session import AsyncSessionFactory
-from app.db.repository import ProductRepo, CategoryRepo
-from app.db.models import OrderStatus
-from app.services.order_service import list_orders_for_admin, set_order_status
+from app.db.models import Order, OrderStatus
+from app.db.repository import OrderRepo, ProductRepo, CategoryRepo
 from app.bot.keyboards.admin_keyboard import (
     build_admin_menu_kb,
     build_orders_page_kb,
@@ -35,37 +35,107 @@ from app.bot.keyboards.admin_keyboard import (
 admin_router = Router(name="admin")
 
 
-# ------------ Доступ только для админов ------------
+# -------- фильтр доступа --------
 class AdminOnly(BaseFilter):
-    """Фильтр: пропускает только пользователей из ADMIN_ID_LIST."""
-    async def __call__(self, message: Message | CallbackQuery) -> bool:
+    """Пускает только пользователей из ADMIN_ID_LIST."""
+    async def __call__(self, obj: Message | CallbackQuery) -> bool:
         uid: Optional[int] = None
-        if isinstance(message, Message):
-            uid = message.from_user.id if message.from_user else None
+        if isinstance(obj, Message):
+            uid = obj.from_user.id if obj.from_user else None
         else:
-            uid = message.from_user.id if message.from_user else None
+            uid = obj.from_user.id if obj.from_user else None
         return bool(uid and uid in settings.ADMIN_ID_LIST)
 
 
-# ------------ Меню администратора ------------
+# -------- меню --------
 @admin_router.message(AdminOnly(), Command("admin"))
-async def admin_menu(message: Message) -> None:
-    """Показывает клавиатуру меню админа."""
-    await message.answer("🛠 Меню администратора:", reply_markup=build_admin_menu_kb())
+async def cmd_admin(message: Message) -> None:
+    await message.answer("⚙️ Админ-панель:", reply_markup=build_admin_menu_kb())
+    logger.debug("Админ %s открыл меню", message.from_user.id if message.from_user else None)
 
 
-# ------------ Добавление товара (FSM) ------------
+# клики по кнопкам меню
+@admin_router.callback_query(AdminOnly(), F.data == "admin:cmd:add")
+async def cb_admin_cmd_add(callback: CallbackQuery, state: FSMContext) -> None:
+    await add_product_start(callback, state)
+
+
+@admin_router.callback_query(AdminOnly(), F.data == "admin:cmd:orders")
+async def cb_admin_cmd_orders(callback: CallbackQuery) -> None:
+    await show_orders_page(callback, page=0, page_size=10)
+
+
+# -------- список заказов с пагинацией --------
+async def show_orders_page(cb_or_msg: CallbackQuery | Message, *, page: int, page_size: int) -> None:
+    offset = max(0, page) * page_size
+    async with AsyncSessionFactory() as session:
+        orders: List[Order] = await OrderRepo.list_for_admin(session, limit=page_size, offset=offset)
+    kb = build_orders_page_kb(orders=orders, page=page, page_size=page_size, has_next=len(orders) == page_size)
+    text = "📦 Заказы (последние):"
+    if isinstance(cb_or_msg, CallbackQuery) and cb_or_msg.message:
+        await cb_or_msg.message.edit_text(text, reply_markup=kb)
+        await cb_or_msg.answer()
+    else:
+        await cb_or_msg.answer(text, reply_markup=kb)  # type: ignore
+
+
+@admin_router.callback_query(AdminOnly(), F.data.startswith("admin:orders:page:"))
+async def admin_orders_page(callback: CallbackQuery) -> None:
+    try:
+        _, _, _, p, sz = callback.data.split(":")
+        page = int(p)
+        size = int(sz)
+    except Exception:
+        await callback.answer("Некорректная страница", show_alert=True)
+        return
+    await show_orders_page(callback, page=page, page_size=size)
+
+
+@admin_router.callback_query(AdminOnly(), F.data.startswith("admin:order:status:"))
+async def admin_order_set_status(callback: CallbackQuery) -> None:
+    """callback: admin:order:status:<order_id>:<status>"""
+    try:
+        _, _, _, oid, status_str = callback.data.split(":")
+        order_id = int(oid)
+        status = OrderStatus(status_str)
+    except Exception:
+        await callback.answer("Некорректные данные", show_alert=True)
+        return
+
+    async with AsyncSessionFactory() as session:
+        updated = await OrderRepo.set_status(session, order_id, status)
+    if not updated:
+        await callback.answer("Заказ не найден", show_alert=True)
+        return
+
+    kb = build_order_status_kb(order_id=updated.id, current=updated.status)
+    await callback.message.answer(
+        f"Заказ {updated.order_number}: статус → <b>{updated.status.value}</b>",
+        reply_markup=kb,
+    )
+    await callback.answer("Статус обновлён")
+
+
+# -------- добавление товара (FSM) --------
 class AddProductSG(StatesGroup):
     title = State()
     price = State()
     category_id = State()
     description = State()
+    active = State()
     confirm = State()
 
 
+@admin_router.callback_query(AdminOnly(), F.data == "admin:add_product")
+async def add_product_start(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await state.set_state(AddProductSG.title)
+    await callback.message.answer("Введите название товара:")
+    await callback.answer()
+
+
 @admin_router.message(AdminOnly(), Command("admin_add_product"))
-async def admin_add_product_start(message: Message, state: FSMContext) -> None:
-    """Старт добавления товара."""
+async def add_product_start_cmd(message: Message, state: FSMContext) -> None:
     await state.clear()
     await state.set_state(AddProductSG.title)
     await message.answer("Введите название товара:")
@@ -75,11 +145,11 @@ async def admin_add_product_start(message: Message, state: FSMContext) -> None:
 async def add_product_title(message: Message, state: FSMContext) -> None:
     title = (message.text or "").strip()
     if not title:
-        await message.answer("Название не должно быть пустым. Повторите:")
+        await message.answer("Название не должно быть пустым. Введите ещё раз:")
         return
     await state.update_data(title=title)
     await state.set_state(AddProductSG.price)
-    await message.answer("Введите цену (например, 1999.90):")
+    await message.answer("Введите цену (пример: 1999.99):")
 
 
 @admin_router.message(AdminOnly(), AddProductSG.price)
@@ -88,48 +158,61 @@ async def add_product_price(message: Message, state: FSMContext) -> None:
     try:
         price = Decimal(raw)
         if price <= 0:
-            raise ValueError
+            raise InvalidOperation
     except Exception:
-        await message.answer("Некорректная цена. Введите ещё раз (пример 1999.90):")
+        await message.answer("Цена некорректна. Пример: 1999.99 — попробуйте ещё раз:")
         return
-
     await state.update_data(price=str(price))
     await state.set_state(AddProductSG.category_id)
-    await message.answer("Введите ID категории (число). Если без категории — отправьте 0:")
+
+    async with AsyncSessionFactory() as session:
+        roots = await CategoryRepo.list_root(session)
+    if roots:
+        cats_text = "\n".join(f"{c.id}: {c.title}" for c in roots)
+        await message.answer(f"Введите ID категории из списка:\n{cats_text}\n(или 0 — без категории)")
+    else:
+        await message.answer("Категорий пока нет. Введите 0 для сохранения без категории.")
 
 
 @admin_router.message(AdminOnly(), AddProductSG.category_id)
 async def add_product_category(message: Message, state: FSMContext) -> None:
     raw = (message.text or "").strip()
     if not raw.isdigit():
-        await message.answer("Ожидалось число. Введите ID категории или 0:")
+        await message.answer("ID категории должен быть числом. Повторите ввод:")
         return
-    cat_id = int(raw)
-    # необязательная валидация существования категории
-    if cat_id != 0:
+    cid = int(raw)
+    if cid != 0:
         async with AsyncSessionFactory() as session:
-            cat = await CategoryRepo.get(session, cat_id)
-            if not cat:
+            if not await CategoryRepo.get(session, cid):
                 await message.answer("Категория не найдена. Введите другой ID или 0:")
                 return
-
-    await state.update_data(category_id=cat_id if cat_id != 0 else None)
+    await state.update_data(category_id=None if cid == 0 else cid)
     await state.set_state(AddProductSG.description)
-    await message.answer("Введите описание (или '-' чтобы оставить пустым):")
+    await message.answer("Введите описание (или '-' чтобы пропустить):")
 
 
 @admin_router.message(AdminOnly(), AddProductSG.description)
 async def add_product_description(message: Message, state: FSMContext) -> None:
     desc = None if (message.text or "").strip() == "-" else (message.text or "").strip()
     await state.update_data(description=desc)
-    data = await state.get_data()
+    await state.set_state(AddProductSG.active)
+    await message.answer("Активировать товар? (да/нет):")
 
+
+@admin_router.message(AdminOnly(), AddProductSG.active)
+async def add_product_active(message: Message, state: FSMContext) -> None:
+    txt = (message.text or "").strip().lower()
+    is_active = txt in {"да", "yes", "y", "true", "1", "ага", "включить"}
+    await state.update_data(is_active=is_active)
+
+    data = await state.get_data()
     preview = (
-        "<b>Подтверждение создания товара:</b>\n\n"
+        "<b>Подтверждение:</b>\n"
         f"Название: <b>{data['title']}</b>\n"
         f"Цена: <b>{data['price']}</b>\n"
         f"Категория ID: <b>{data.get('category_id') or '—'}</b>\n"
-        f"Описание: <i>{data.get('description') or '—'}</i>\n\n"
+        f"Описание: <i>{data.get('description') or '—'}</i>\n"
+        f"Активен: <b>{'Да' if data['is_active'] else 'Нет'}</b>\n\n"
         "Отправьте «да» для подтверждения или «нет» для отмены."
     )
     await state.set_state(AddProductSG.confirm)
@@ -138,8 +221,8 @@ async def add_product_description(message: Message, state: FSMContext) -> None:
 
 @admin_router.message(AdminOnly(), AddProductSG.confirm)
 async def add_product_confirm(message: Message, state: FSMContext) -> None:
-    answer = (message.text or "").strip().lower()
-    if answer not in {"да", "yes", "y"}:
+    ok = (message.text or "").strip().lower() in {"да", "yes", "y"}
+    if not ok:
         await state.clear()
         await message.answer("Создание товара отменено.")
         return
@@ -154,82 +237,7 @@ async def add_product_confirm(message: Message, state: FSMContext) -> None:
             currency="EUR",
             category_id=data.get("category_id"),
             description=data.get("description"),
-            is_active=True,
+            is_active=bool(data.get("is_active", True)),
         )
     await state.clear()
-    await message.answer(f"✅ Товар создан: <b>{product.title}</b> (id={product.id})")
-
-
-# ------------ Тоггл активности товара ------------
-@admin_router.message(AdminOnly(), Command("admin_product_toggle"))
-async def admin_product_toggle(message: Message) -> None:
-    """
-    Переключить активность товара: /admin_product_toggle <product_id>
-    """
-    parts = (message.text or "").split()
-    if len(parts) != 2 or not parts[1].isdigit():
-        await message.answer("Использование: /admin_product_toggle <product_id>")
-        return
-    product_id = int(parts[1])
-
-    async with AsyncSessionFactory() as session:
-        product = await ProductRepo.get(session, product_id)
-        if not product:
-            await message.answer("Товар не найден.")
-            return
-        new_state = not bool(product.is_active)
-        product = await ProductRepo.update(session, product_id, is_active=new_state)
-
-    await message.answer(f"Статус товара #{product_id}: {'АКТИВЕН' if product.is_active else 'ОТКЛЮЧЕН'}")
-
-
-# ------------ Просмотр заказов и смена статуса ------------
-@admin_router.message(AdminOnly(), Command("admin_orders"))
-async def admin_orders(message: Message) -> None:
-    """Показывает первую страницу заказов."""
-    page, page_size = 0, 10
-    async with AsyncSessionFactory() as session:
-        orders = await list_orders_for_admin(session, limit=page_size, offset=page * page_size)
-    kb = build_orders_page_kb(orders=orders, page=page, page_size=page_size, has_next=len(orders) == page_size)
-    await message.answer("📦 Заказы (последние):", reply_markup=kb)
-
-
-@admin_router.callback_query(AdminOnly(), F.data.startswith("admin:orders:page:"))
-async def admin_orders_page(callback: CallbackQuery) -> None:
-    """Пагинация списка заказов."""
-    _, _, _, p, sz = callback.data.split(":")
-    page = max(0, int(p))
-    page_size = int(sz)
-
-    async with AsyncSessionFactory() as session:
-        orders = await list_orders_for_admin(session, limit=page_size, offset=page * page_size)
-
-    kb = build_orders_page_kb(orders=orders, page=page, page_size=page_size, has_next=len(orders) == page_size)
-    await callback.message.edit_text("📦 Заказы (последние):", reply_markup=kb)
-    await callback.answer()
-
-
-@admin_router.callback_query(AdminOnly(), F.data.startswith("admin:order:status:"))
-async def admin_order_set_status(callback: CallbackQuery) -> None:
-    """
-    Смена статуса заказа:
-    callback: admin:order:status:<order_id>:<status>
-    """
-    try:
-        _, _, _, oid, status_str = callback.data.split(":")
-        order_id = int(oid)
-        status = OrderStatus(status_str)
-    except Exception:
-        await callback.answer("Некорректные данные", show_alert=True)
-        return
-
-    async with AsyncSessionFactory() as session:
-        updated = await set_order_status(session, order_id=order_id, status=status)
-    if not updated:
-        await callback.answer("Заказ не найден", show_alert=True)
-        return
-
-    await callback.answer("Статус обновлён")
-    # Обновим строку с кнопками статуса (простым сообщением)
-    kb = build_order_status_kb(order_id=updated.id, current=updated.status)
-    await callback.message.answer(f"Заказ {updated.order_number}: статус → <b>{updated.status.value}</b>", reply_markup=kb)
+    await message.answer(f"✅ Товар создан: <b>{product.title}</b>")
