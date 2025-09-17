@@ -1,0 +1,46 @@
+"""
+Тесты корзины: добавление товара и подсчёт суммы.
+"""
+import pytest
+from decimal import Decimal
+from sqlalchemy import insert, select
+
+from app.db.models import Category, Product, User
+from app.services.cart_service import add_item, subtotal, list_items
+
+
+@pytest.mark.asyncio
+async def test_add_and_subtotal(async_session):
+    # Arrange: создаём пользователя, категорию и товар
+    async with async_session.begin():
+        await async_session.execute(
+            insert(User).values(id=111, full_name="Test User")
+        )
+        res = await async_session.execute(
+            insert(Category).values(title="Ноутбуки").returning(Category.id)
+        )
+        category_id = res.scalar_one()
+        await async_session.execute(
+            insert(Product).values(
+                title="Laptop X",
+                description="Тестовый ноутбук",
+                price=Decimal("9999.90"),
+                currency="RUB",
+                category_id=category_id,
+                is_active=True,
+            )
+        )
+        # получим id продукта
+        pid = (await async_session.execute(select(Product.id))).scalar_one()
+
+    # Act: добавляем 2шт и считаем сумму
+    await add_item(async_session, user_id=111, product_id=pid, quantity=1)
+    await add_item(async_session, user_id=111, product_id=pid, quantity=1)
+
+    items = await list_items(async_session, user_id=111)
+    total = await subtotal(async_session, user_id=111)
+
+    # Assert
+    assert len(items) == 1
+    assert items[0].quantity == 2
+    assert total == Decimal("1999.80")
