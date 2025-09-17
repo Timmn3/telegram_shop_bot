@@ -9,6 +9,7 @@ from .common import common_router
 from .catalog import catalog_router
 from .cart import cart_router
 from .checkout import checkout_router
+from .admin import admin_router
 
 
 def register_all_handlers(dp: Dispatcher) -> None:
@@ -16,3 +17,4 @@ def register_all_handlers(dp: Dispatcher) -> None:
     dp.include_router(catalog_router)
     dp.include_router(cart_router)
     dp.include_router(checkout_router)
+    dp.include_router(admin_router)
