@@ -21,7 +21,7 @@ commands_menu_router = Router(name="commands_menu")
 
 # Общий набор команд (видны всем)
 COMMON_COMMANDS = [
-    BotCommand(command="start", description="Начать и сохранить профиль"),
+    BotCommand(command="start", description="Начать"),
     BotCommand(command="menu", description="Каталог"),
     BotCommand(command="cart", description="Корзина"),
 ]
