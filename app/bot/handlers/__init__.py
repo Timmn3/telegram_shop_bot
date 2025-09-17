@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from aiogram import Dispatcher
 
+from app.bot.commands_menu import commands_menu_router
+
 from .common import common_router
 from .catalog import catalog_router
 from .cart import cart_router
@@ -13,6 +15,7 @@ from .admin import admin_router
 
 
 def register_all_handlers(dp: Dispatcher) -> None:
+    dp.include_router(commands_menu_router)
     dp.include_router(common_router)
     dp.include_router(catalog_router)
     dp.include_router(cart_router)
