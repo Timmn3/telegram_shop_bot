@@ -77,16 +77,20 @@ def render_order_preview(
 ) -> str:
     """Сформировать HTML-разметку подтверждения заказа для сообщения."""
     lines = ["<b>Проверьте заказ</b>", ""]
+
     currency = None
     found = False
     for it in items:
         found = True
-        currency = currency or getattr(it, "currency", "EUR")
-        title = getattr(it, "product_title", "")
+        # сначала пробуем у CartItem/OrderItem product.title, иначе у псевдомодели
+        title = getattr(it, "product", None).title if getattr(it, "product", None) else getattr(it, "product_title", "")
         qty = getattr(it, "quantity", 1)
+        currency = currency or getattr(it, "currency", getattr(it.product, "currency", "EUR"))
         lines.append(f"• {title} × {qty}")
+
     if not found:
         lines.append("— (пусто) —")
+
     lines += [
         "",
         f"<b>Итого:</b> {total} {currency or 'EUR'}",
@@ -99,3 +103,4 @@ def render_order_preview(
         "Если всё верно — подтвердите заказ.",
     ]
     return "\n".join(lines)
+
