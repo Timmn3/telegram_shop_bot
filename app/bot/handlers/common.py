@@ -12,10 +12,12 @@ from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery
 
 from app.core.logging_cfg import logger
+from app.core.config import settings
 from app.db.session import AsyncSessionFactory
-from app.db.models import User  # <-- добавили
+from app.db.models import User
 from app.services.catalog_service import list_root_categories
 from app.bot.keyboards.inline_catalog import build_categories_kb
+from app.bot.commands_menu import set_admin_commands_for_chat  # <-- добавлено
 
 common_router = Router(name="common")
 
@@ -29,6 +31,7 @@ async def cmd_start(message: Message) -> None:
     - Берём Telegram user_id и full_name из сообщения.
     - Если запись о пользователе отсутствует — создаём её.
     - Повторные /start не создают дубликаты (проверяем по PK id).
+    - Если пользователь — админ (есть в ADMIN_ID_LIST), ставим ему персональные команды.
     """
     text = (
         "👋 Привет! Это магазин в Telegram.\n"
@@ -40,17 +43,18 @@ async def cmd_start(message: Message) -> None:
     full_name = message.from_user.full_name if message.from_user else None
 
     if tg_id:
+        # 1) Идемпотентно сохраняем пользователя
         async with AsyncSessionFactory() as session:
-            # idempotent: проверяем наличие пользователя по PK
             exists = await session.get(User, tg_id)
             if not exists:
-                # создаём только один раз
-                user = User(id=tg_id, full_name=full_name)
-                session.add(user)
+                session.add(User(id=tg_id, full_name=full_name))
                 await session.commit()
                 logger.info("Создан новый пользователь: id=%s, name=%r", tg_id, full_name)
-            else:
-                logger.debug("Пользователь уже есть в БД: id=%s", tg_id)
+
+        # 2) Если это админ — досыпаем персональные команды в ЭТОТ чат
+        if tg_id in (settings.ADMIN_ID_LIST or []):
+            await set_admin_commands_for_chat(message.bot, tg_id)
+
     else:
         logger.warning("Не удалось определить from_user.id для /start")
 
