@@ -108,21 +108,43 @@ async def admin_orders_page(callback: CallbackQuery) -> None:
 
 @admin_router.callback_query(AdminOnly(), F.data.startswith("admin:order:status:"))
 async def admin_order_set_status(callback: CallbackQuery) -> None:
-    """Смена статуса заказа: admin:order:status:<order_id>:<status>."""
+    """
+    Смена статуса заказа: admin:order:status:<order_id>:<status>.
+
+    Логика:
+    - Открываем ОДНУ транзакцию и внутри неё делаем и чтение, и возможное обновление.
+    - Если выбран тот же статус — ничего не сохраняем и отвечаем без текста.
+    - Если статус меняется — фиксируем транзакцию, перерисовываем клавиатуру и даём уведомление.
+    """
     try:
         _, _, _, oid, status_str = callback.data.split(":")
         order_id = int(oid)
-        status = OrderStatus(status_str)
+        new_status = OrderStatus(status_str)
     except Exception:
         await callback.answer("Некорректные данные", show_alert=True)
         return
 
     async with AsyncSessionFactory() as session:
-        updated = await OrderRepo.set_status(session, order_id, status)
-    if not updated:
-        await callback.answer("Заказ не найден", show_alert=True)
-        return
+        async with session.begin():  # один begin на весь блок
+            order = await OrderRepo.get(session, order_id)
+            if not order:
+                # внутри begin можно просто бросить исключение/вернуть — СА сам откатит
+                await callback.answer("Заказ не найден", show_alert=True)
+                return
 
+            if order.status == new_status:
+                # Перерисуем клавиатуру, но без всплывашки «обновлён»
+                kb = build_order_status_kb(order_id=order.id, current=order.status)
+                if callback.message:
+                    await callback.message.edit_reply_markup(reply_markup=kb)
+                await callback.answer()  # пустой ответ — телега снимет «часики»
+                return
+
+            # Меняем статус; внутри той же транзакции — лишних begin нет
+            updated = await OrderRepo.set_status(session, order_id, new_status)
+            # При необходимости можно session.flush() или await session.refresh(updated)
+
+    # Вне транзакции — рисуем UI и шлём уведомление
     kb = build_order_status_kb(order_id=updated.id, current=updated.status)
     await callback.message.answer(
         f"Заказ {updated.order_number}: статус → <b>{updated.status.value}</b>",
