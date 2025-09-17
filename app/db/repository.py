@@ -113,14 +113,19 @@ class ProductRepo:
 
     @staticmethod
     async def get(session: AsyncSession, product_id: int) -> Optional[Product]:
-        """Получить товар по id (с изображениями)."""
+        """
+        Получить товар по id (с изображениями).
+
+        FIX: при joined eager загрузке коллекции images необходимо вызвать .unique()
+        перед scalar_one_or_none(), иначе SQLAlchemy поднимет InvalidRequestError.
+        """
         stmt = (
             select(Product)
             .where(Product.id == product_id)
             .options(joinedload(Product.images))
         )
         result = await session.execute(stmt)
-        return result.scalar_one_or_none()
+        return result.unique().scalar_one_or_none()
 
     @staticmethod
     async def list_by_category(
@@ -379,14 +384,19 @@ class OrderRepo:
 
     @staticmethod
     async def get(session: AsyncSession, order_id: int) -> Optional[Order]:
-        """Получить заказ по id (с позициями)."""
+        """
+        Получить заказ по id (с позициями).
+
+        FIX: из-за joined eager загрузки коллекции items нужен вызов .unique()
+        перед scalar_one_or_none().
+        """
         stmt = (
             select(Order)
             .where(Order.id == order_id)
             .options(joinedload(Order.items).joinedload(OrderItem.product))
         )
         result = await session.execute(stmt)
-        return result.scalar_one_or_none()
+        return result.unique().scalar_one_or_none()
 
     @staticmethod
     async def list_for_admin(session: AsyncSession, *, limit: int = 50, offset: int = 0) -> List[Order]:
