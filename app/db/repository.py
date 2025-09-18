@@ -93,6 +93,23 @@ class CategoryRepo:
         logger.debug("CategoryRepo.list_children: parent_id=%s count=%s", parent_id, len(rows))
         return rows
 
+    @staticmethod
+    async def create(
+            session: AsyncSession,
+            *,
+            title: str,
+            slug: str,
+            parent_id: int | None = None,
+    ) -> Category:
+        """
+        Создать категорию (для посева и админки).
+        """
+        category = Category(title=title, slug=slug, parent_id=parent_id)
+        session.add(category)
+        await session.flush()
+        logger.info("CategoryRepo.create: id=%s title=%r", category.id, category.title)
+        return category
+
 
 class ProductRepo:
     @staticmethod
