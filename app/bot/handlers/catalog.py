@@ -174,3 +174,24 @@ async def _build_products_keyboard(session: AsyncSession, *, category_id: int, p
         has_prev=has_prev,
         has_next=has_next,
     )
+
+
+# --- Назад к корневым категориям ---
+from aiogram import F
+from aiogram.types import CallbackQuery
+from app.db.session import AsyncSessionFactory
+from app.services.catalog_service import list_root_categories
+from app.bot.keyboards.inline_catalog import build_categories_kb
+
+@catalog_router.callback_query(F.data == "back:categories")
+async def cb_back_to_categories(callback: CallbackQuery) -> None:
+    """
+    Возврат на экран корневых категорий:
+    показывает «🗂 Выберите категорию:» и клавиатуру категорий.
+    """
+    async with AsyncSessionFactory() as session:
+        categories = await list_root_categories(session)
+    kb = build_categories_kb(categories)
+    if callback.message:
+        await callback.message.edit_text("🗂 Выберите категорию:", reply_markup=kb)
+    await callback.answer()

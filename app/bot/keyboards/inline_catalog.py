@@ -1,4 +1,3 @@
-# app/bot/keyboards/inline_catalog.py
 """
 Инлайн-клавиатуры каталога и декларации callback-data.
 
@@ -13,7 +12,7 @@ from __future__ import annotations
 from typing import Iterable, Optional
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.filters.callback_data import CallbackData
-from aiogram.types import InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton  # <-- ДОБАВИЛИ InlineKeyboardButton
 
 from app.db.models import Category, Product
 
@@ -78,7 +77,7 @@ def build_products_kb(
     """
     Список товаров с пагинацией.
     На каждый товар — кнопка с переходом в карточку.
-    Внизу — пагинация (◀️ / ▶️).
+    Внизу — пагинация (◀️ / ▶️) и "Назад к категориям".
 
     ВАЖНО: не оборачиваем готовый InlineKeyboardMarkup в новый билдер!
     Склейка билдера с навигацией делается через .attach(nav) до .as_markup().
@@ -115,8 +114,11 @@ def build_products_kb(
             callback_data=ProdListCB(cat_id=category_id, page=page + 1, page_size=page_size),
         )
 
+    # 🔙 Назад к списку категорий
+    nav.row(InlineKeyboardButton(text="⬅️ Назад к категориям", callback_data="back:categories"))
+
     kb.adjust(1)
-    kb.attach(nav)  # <-- фикс: прикрепляем билдер, не InlineKeyboardMarkup
+    kb.attach(nav)  # прикрепляем навигационный ряд
     return kb.as_markup()
 
 
