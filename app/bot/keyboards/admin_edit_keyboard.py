@@ -16,7 +16,6 @@ def build_edit_menu_kb(*, product_id: int) -> InlineKeyboardMarkup:
     kb.button(text="📝 Описание", callback_data=f"admin:edit:field:description:{product_id}")
     kb.button(text="🖼 Фото", callback_data=f"admin:edit:field:photos:{product_id}")
     kb.adjust(2, 2, 1)
-    kb.row(InlineKeyboardButton(text="⬅️ Назад", callback_data=EDIT_BACK_CB))
     kb.row(InlineKeyboardButton(text="🚫 Отмена", callback_data=EDIT_CANCEL_CB))
     return kb.as_markup()
 
