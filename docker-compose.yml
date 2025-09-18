@@ -1,18 +1,55 @@
-version: '3.8'
+version: "3.8"
+
 services:
   db:
     image: postgres:15
+    container_name: tgshop_db
+    restart: unless-stopped
     environment:
+      POSTGRES_DB: tg_shop
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: tg_shop
     ports:
       - "5432:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d tg_shop"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   redis:
-    image: redis:7
+    image: redis:7-alpine
+    container_name: tgshop_redis
+    restart: unless-stopped
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .
+    volumes:
+      - ./:/app
+    working_dir: /app
+    container_name: tgshop_app
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://postgres:postgres@db:5432/tg_shop}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head && python -m app.bot.main"
+
 volumes:
   db_data:
