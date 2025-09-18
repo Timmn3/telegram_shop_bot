@@ -158,9 +158,12 @@ class ProductRepo:
         category_id: int | None = None,
         description: str | None = None,
         is_active: bool = True,
+        image_urls: list[str] | None = None,
     ) -> Product:
         """
-        Создать товар без изображений (изображения добавляются отдельно в ProductImage).
+        Создать товар и (опционально) сразу прикрепить изображения.
+        Для изображений используем поле `telegram_file_id`, в которое сохраняем URL —
+        Telegram умеет принимать URL как file_id при отправке фото.
         """
         product = Product(
             title=title,
@@ -171,8 +174,15 @@ class ProductRepo:
             is_active=is_active,
         )
         session.add(product)
-        await session.flush()
-        logger.info("ProductRepo.create: id=%s title=%r", product.id, product.title)
+        await session.flush()  # получаем product.id
+
+        # Если передали ссылки на изображения — сохраним их в ProductImage с корректным порядком
+        if image_urls:
+            for idx, url in enumerate(image_urls):
+                session.add(ProductImage(product_id=product.id, telegram_file_id=url, sort_order=idx))
+            await session.flush()
+
+        logger.info("ProductRepo.create: id=%s title=%r images=%s", product.id, product.title, len(image_urls or []))
         return product
 
     @staticmethod
@@ -205,6 +215,19 @@ class ProductRepo:
 
         await session.flush()
         return product
+
+    @staticmethod
+    async def replace_images(session, *, product_id: int, telegram_file_ids: list[str]) -> None:
+        """
+        Полная замена набора изображений товара. Старые удаляются, новые вставляются
+        с последовательным sort_order.
+        """
+        await session.execute(delete(ProductImage).where(ProductImage.product_id == product_id))
+        for idx, file_id in enumerate(telegram_file_ids):
+            session.add(ProductImage(product_id=product_id, telegram_file_id=file_id, sort_order=idx))
+        await session.flush()
+        logger.info("ProductRepo.replace_images: product_id=%s images=%s", product_id, len(telegram_file_ids))
+
 
     @staticmethod
     async def replace_images(session, *, product_id: int, telegram_file_ids: list[str]) -> None:
