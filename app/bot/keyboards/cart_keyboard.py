@@ -48,8 +48,9 @@ def render_cart_text(items: List[CartItem], total: Decimal) -> str:
 
 def build_cart_keyboard(items: List[CartItem]) -> InlineKeyboardMarkup:
     """
-    Построить инлайн-клавиатуру корзины c компактными строками по товару.
-    Каждая позиция занимает одну строку: [• title] [➖] [qty] [➕] [🗑]
+    Построить инлайн-клавиатуру корзины с компактным блоком на товар:
+    [• title]
+    [➖] [qty] [➕] [🗑]
     Внизу — отдельные широкие кнопки «Очистить» и «Оформить».
     Для пустой корзины — только «⬅️ В каталог».
     """
@@ -61,15 +62,17 @@ def build_cart_keyboard(items: List[CartItem]) -> InlineKeyboardMarkup:
 
     for it in items:
         pid = it.product_id
+        # Первая строка — только название
         title_btn = InlineKeyboardButton(text=f"• {_crop_title(it.product.title)}", callback_data=NOOP)
+        kb.append([title_btn])
+        # Вторая строка — кнопки управления количеством
         dec_btn = InlineKeyboardButton(text="➖", callback_data=f"cart:dec:{pid}")
         qty_btn = InlineKeyboardButton(text=str(it.quantity), callback_data=NOOP)
         inc_btn = InlineKeyboardButton(text="➕", callback_data=f"cart:inc:{pid}")
         del_btn = InlineKeyboardButton(text="🗑", callback_data=f"cart:del:{pid}")
-        kb.append([title_btn, dec_btn, qty_btn, inc_btn, del_btn])
+        kb.append([dec_btn, qty_btn, inc_btn, del_btn])
 
-    # Разделяем визуально товары и нижний блок
-    # (телеграм не имеет «разделителей», просто новой строкой ниже добавим большие кнопки)
+    # Нижний блок
     kb.append([InlineKeyboardButton(text="🧹 Очистить корзину", callback_data="cart:clear")])
     kb.append([InlineKeyboardButton(text="🛍 Оформить", callback_data="checkout:start")])
 
