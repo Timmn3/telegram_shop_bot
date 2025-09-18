@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     """Настройки приложения, загружаемые из окружения / .env."""
     BOT_TOKEN: str = Field(..., description="Токен Telegram-бота")
     DATABASE_URL: str = Field(..., description="URL подключения к БД (postgresql+asyncpg)")
+    TEST_DATABASE_URL: str = Field(..., description="URL подключения к тестовой БД (postgresql+asyncpg)")
     ADMIN_IDS: str = Field("", description="Список Telegram ID админов через запятую")
     REDIS_URL: str | None = Field(default=None, description="URL Redis для FSM (опционально)")
     LOG_LEVEL: str = Field(default="INFO", description="Уровень логирования: DEBUG/INFO/WARNING/ERROR")

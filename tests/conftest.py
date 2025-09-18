@@ -31,7 +31,7 @@ async def async_session() -> AsyncSession:
     Перед каждым тестом схема пересоздаётся (drop + create).
     """
     engine = create_async_engine(
-        settings.DATABASE_URL,  # должен быть формата postgresql+asyncpg://...
+        settings.TEST_DATABASE_URL,  # должен быть формата postgresql+asyncpg://...
         future=True,
         echo=False,
     )
