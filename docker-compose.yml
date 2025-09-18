@@ -58,6 +58,8 @@ services:
       REDIS_URL: ${REDIS_URL}
     command: bash -lc "python -m app.bot.main"
     restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
 
 volumes:
   db_data:
