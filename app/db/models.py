@@ -10,10 +10,8 @@ from __future__ import annotations
 - Корзины (Cart) и элементы корзины (CartItem)
 - Заказы (Order) и позиции заказа (OrderItem)
 - Перечисления статусов заказа и корзины
-
 """
 
-import datetime
 import enum
 from sqlalchemy import (
     Column,
@@ -27,23 +25,36 @@ from sqlalchemy import (
     DateTime,
     Enum,
     UniqueConstraint,
+    func,
 )
 from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
 
 
-class OrderStatus(enum.Enum):
-    """
-    Статусы заказа.
+# ─────────────────────────── Общий миксин ─────────────────────────── #
 
-    Значения хранятся в БД как строки:
-      - "new" — новый
-      - "processing" — в обработке
-      - "shipped" — отправлен
-      - "delivered" — доставлен
-      - "cancelled" — отменён
+class TimestampMixin:
     """
+    Единые временные метки с поддержкой таймзоны.
+    created_at задаётся при вставке, updated_at обновляется при изменении.
+    """
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+# ─────────────────────────── Enum-ы ─────────────────────────── #
+
+class OrderStatus(enum.Enum):
     NEW = "new"
     PROCESSING = "processing"
     SHIPPED = "shipped"
@@ -52,34 +63,19 @@ class OrderStatus(enum.Enum):
 
 
 class CartStatus(enum.Enum):
-    """
-    Статусы корзины.
-    """
     ACTIVE = "active"
     ORDERED = "ordered"
 
 
-class User(Base):
-    """
-    Пользователь Telegram.
+# ─────────────────────────── Модели ─────────────────────────── #
 
-    Поля:
-        id: Telegram user id (BigInteger, PK).
-        full_name: Полное имя пользователя.
-        phone: Номер телефона.
-        created_at: Дата и время создания записи (UTC).
-    Отношения:
-        carts: список корзин пользователя.
-        orders: список заказов пользователя.
-    """
+class User(Base, TimestampMixin):
     __tablename__ = "users"
 
-    id = Column(BigInteger, primary_key=True, index=True)  # telegram user id
+    id = Column(BigInteger, primary_key=True, index=True)  # Telegram user id
     full_name = Column(String(255), nullable=True)
     phone = Column(String(64), nullable=True)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
 
-    # Связи: пользователь -> корзины, пользователь -> заказы
     carts = relationship("Cart", back_populates="user", cascade="all,delete-orphan")
     orders = relationship("Order", back_populates="user", cascade="all,delete-orphan")
 
@@ -88,18 +84,6 @@ class User(Base):
 
 
 class Category(Base):
-    """
-    Категория товара (может быть вложенной — дерево).
-
-    Поля:
-        id: PK
-        title: Название категории.
-        slug: Уникальный slug (опционально).
-        parent_id: Ссылка на родительскую категорию (self-referential FK).
-    Отношения:
-        parent: ссылка на родителя.
-        children: обратная связь — список дочерних категорий.
-    """
     __tablename__ = "categories"
 
     id = Column(Integer, primary_key=True)
@@ -107,30 +91,13 @@ class Category(Base):
     slug = Column(String(255), nullable=True, unique=True)
     parent_id = Column(Integer, ForeignKey("categories.id"), nullable=True)
 
-    # remote_side необходим для self-referential relationship
     parent = relationship("Category", remote_side=[id], backref="children")
 
     def __repr__(self) -> str:
         return f"<Category id={self.id} title={self.title!r}>"
 
 
-class Product(Base):
-    """
-    Товар.
-
-    Поля:
-        id: PK
-        title: Название товара.
-        description: Описание товара.
-        price: Цена (фиксированная точность).
-        currency: Валюта (по умолчанию "RUB").
-        category_id: FK на категорию.
-        is_active: Флаг доступности товара.
-        created_at, updated_at: метки времени.
-    Отношения:
-        category: категория товара.
-        images: список изображений товара.
-    """
+class Product(Base, TimestampMixin):
     __tablename__ = "products"
 
     id = Column(Integer, primary_key=True)
@@ -140,15 +107,7 @@ class Product(Base):
     currency = Column(String(8), default="RUB", nullable=False)
     category_id = Column(Integer, ForeignKey("categories.id"), nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
-    updated_at = Column(
-        DateTime,
-        default=datetime.datetime.utcnow,
-        onupdate=datetime.datetime.utcnow,
-        nullable=False,
-    )
 
-    # backref "products" добавляет Category.products
     category = relationship("Category", backref="products")
     images = relationship("ProductImage", back_populates="product", cascade="all,delete-orphan")
 
@@ -157,18 +116,6 @@ class Product(Base):
 
 
 class ProductImage(Base):
-    """
-    Изображение товара.
-
-    Поля:
-        id: PK
-        product_id: FK на products.id (CASCADE при удалении товара).
-        url: URL изображения (опционально).
-        telegram_file_id: telegram file_id (опционально).
-        sort_order: порядок отображения изображений для товара.
-    Индексы/ограничения:
-        Уникальное сочетание (product_id, sort_order) — порядок уникален в рамках товара.
-    """
     __tablename__ = "product_images"
 
     id = Column(Integer, primary_key=True)
@@ -187,60 +134,28 @@ class ProductImage(Base):
         return f"<ProductImage id={self.id} product_id={self.product_id}>"
 
 
-class Cart(Base):
-    """
-    Корзина пользователя.
-
-    Поля:
-        id: PK
-        user_id: FK на пользователя.
-        status: Статус корзины (CartStatus).
-        created_at, updated_at: метки времени.
-    Отношения:
-        user: владелец корзины.
-        items: элементы корзины (CartItem).
-    """
+class Cart(Base, TimestampMixin):
     __tablename__ = "carts"
 
     id = Column(Integer, primary_key=True)
     user_id = Column(BigInteger, ForeignKey("users.id"), nullable=False)
     status = Column(Enum(CartStatus), default=CartStatus.ACTIVE, nullable=False)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
-    updated_at = Column(
-        DateTime,
-        default=datetime.datetime.utcnow,
-        onupdate=datetime.datetime.utcnow,
-        nullable=False,
-    )
 
     user = relationship("User", back_populates="carts")
     items = relationship("CartItem", back_populates="cart", cascade="all,delete-orphan")
 
     def __repr__(self) -> str:
-        # .value даёт человекочитаемое значение enum-а
         return f"<Cart id={self.id} user_id={self.user_id} status={self.status.value}>"
 
 
 class CartItem(Base):
-    """
-    Элемент корзины.
-
-    Поля:
-        id: PK
-        cart_id: FK на корзину (CASCADE при удалении корзины).
-        product_id: FK на товар.
-        quantity: Количество.
-        price_at_added: Цена товара на момент добавления в корзину (фиксируем).
-    Ограничения:
-        Уникальность (cart_id, product_id) — один товар в корзине хранится одной записью.
-    """
     __tablename__ = "cart_items"
 
     id = Column(Integer, primary_key=True)
     cart_id = Column(Integer, ForeignKey("carts.id", ondelete="CASCADE"), nullable=False)
     product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
     quantity = Column(Integer, default=1, nullable=False)
-    price_at_added = Column(Numeric(10, 2), nullable=False)  # фиксируем цену на момент добавления
+    price_at_added = Column(Numeric(10, 2), nullable=False)
 
     cart = relationship("Cart", back_populates="items")
     product = relationship("Product")
@@ -253,25 +168,7 @@ class CartItem(Base):
         return f"<CartItem id={self.id} cart_id={self.cart_id} product_id={self.product_id} qty={self.quantity}>"
 
 
-class Order(Base):
-    """
-    Заказ.
-
-    Поля:
-        id: PK
-        order_number: Уникальный номер заказа (строка).
-        user_id: FK на пользователя (покупателя).
-        status: Статус заказа (OrderStatus).
-        total_amount: Общая сумма заказа.
-        currency: Валюта суммы (по умолчанию "RUB").
-        contact_name, contact_phone: Контактные данные получателя.
-        address: Адрес доставки (опционально).
-        delivery_type: Тип доставки (опционально).
-        created_at, updated_at: метки времени.
-    Отношения:
-        user: покупатель (User).
-        items: позиции заказа (OrderItem).
-    """
+class Order(Base, TimestampMixin):
     __tablename__ = "orders"
 
     id = Column(Integer, primary_key=True)
@@ -281,19 +178,10 @@ class Order(Base):
     total_amount = Column(Numeric(12, 2), nullable=False)
     currency = Column(String(8), default="RUB", nullable=False)
 
-    # Контактные данные / доставка
     contact_name = Column(String(255), nullable=False)
     contact_phone = Column(String(64), nullable=False)
     address = Column(Text, nullable=True)
     delivery_type = Column(String(64), nullable=True)
-
-    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
-    updated_at = Column(
-        DateTime,
-        default=datetime.datetime.utcnow,
-        onupdate=datetime.datetime.utcnow,
-        nullable=False,
-    )
 
     user = relationship("User", back_populates="orders")
     items = relationship("OrderItem", back_populates="order", cascade="all,delete-orphan")
@@ -303,23 +191,13 @@ class Order(Base):
 
 
 class OrderItem(Base):
-    """
-    Позиция в заказе.
-
-    Поля:
-        id: PK
-        order_id: FK на заказ (CASCADE при удалении заказа).
-        product_id: FK на товар.
-        quantity: Количество единиц товара.
-        item_price: Цена за единицу на момент покупки.
-    """
     __tablename__ = "order_items"
 
     id = Column(Integer, primary_key=True)
     order_id = Column(Integer, ForeignKey("orders.id", ondelete="CASCADE"), nullable=False)
     product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
     quantity = Column(Integer, default=1, nullable=False)
-    item_price = Column(Numeric(10, 2), nullable=False)  # цена за единицу на момент покупки
+    item_price = Column(Numeric(10, 2), nullable=False)
 
     order = relationship("Order", back_populates="items")
     product = relationship("Product")
