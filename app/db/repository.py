@@ -160,24 +160,21 @@ class ProductRepo:
 
     @staticmethod
     async def update_fields(
-        session,
-        *,
-        product_id: int,
-        title: str | None = None,
-        price: Decimal | None = None,
-        category_id: int | None | None = None,
-        description: str | None | None = None,
-        is_active: bool | None = None,
+            session,
+            *,
+            product_id: int,
+            title: str | None = None,
+            price: Decimal | None = None,
+            category_id: int | None = None,
+            description: str | None = None,
     ):
-        """
-        Точечное обновление полей товара. Возвращает обновлённый объект или None.
-        Любые параметры, равные None, пропускаются (не меняются).
-        """
+        """Обновить указанные поля товара."""
+        from sqlalchemy import select
+        from app.db.models import Product
 
         res = await session.execute(select(Product).where(Product.id == product_id).limit(1))
         product = res.scalar_one_or_none()
         if not product:
-            logger.debug("ProductRepo.update_fields: not found product_id=%s", product_id)
             return None
 
         if title is not None:
@@ -186,13 +183,10 @@ class ProductRepo:
             product.price = price
         if description is not None or description is None:
             product.description = description
-        if is_active is not None:
-            product.is_active = is_active
         if category_id is not None or category_id is None:
             product.category_id = category_id
 
         await session.flush()
-        logger.info("ProductRepo.update_fields: updated product_id=%s", product_id)
         return product
 
     @staticmethod
