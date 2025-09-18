@@ -1,26 +1,26 @@
 from __future__ import annotations
+"""
+Создание async-движка и фабрики сессий.
 
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+Подсказки:
+- Включить подробные SQL-трассировки можно, установив echo=True ниже
+  (или подняв уровень 'sqlalchemy.engine' в setup_logging()).
+"""
+
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
+
 from app.core.config import settings
-
-"""
-Конфигурация асинхронного подключения к базе данных с использованием SQLAlchemy Async.
-
-Содержит:
-- engine: асинхронный движок для работы с базой.
-- AsyncSessionFactory: фабрика сессий.
-- get_session: утилита для получения новой сессии.
-"""
+from app.core.logging_cfg import logger
 
 # Создание асинхронного движка
-# poolclass=NullPool — без пулов
 engine = create_async_engine(
     settings.DATABASE_URL,
     future=True,
-    echo=False,  # True для отладки SQL-запросов
-    poolclass=NullPool,
+    echo=False,           # True для отладки SQL-запросов
+    poolclass=NullPool,   # без пула, прозрачно для тестов/скриптов
 )
+logger.info("DB engine created (echo=%s, pool=%s)", False, "NullPool")
 
 # Фабрика асинхронных сессий
 AsyncSessionFactory: async_sessionmaker[AsyncSession] = async_sessionmaker(
@@ -28,15 +28,17 @@ AsyncSessionFactory: async_sessionmaker[AsyncSession] = async_sessionmaker(
     expire_on_commit=False,
     class_=AsyncSession,
 )
+logger.debug("AsyncSessionFactory initialized (expire_on_commit=%s)", False)
 
 
 def get_session() -> AsyncSession:
     """
-    Возвращает новую асинхронную сессию (AsyncSession).
+    Вернуть новую асинхронную сессию (AsyncSession).
 
-    Пример использования в зависимостях FastAPI:
+    Пример:
 
         async with get_session() as session:
             ...
     """
+    logger.debug("get_session() called")
     return AsyncSessionFactory()

@@ -1,3 +1,5 @@
+# app/db/repository.py
+from __future__ import annotations
 """
 Repository layer (доступ к БД и транзакции) для tg_shop_bot.
 
@@ -12,21 +14,20 @@ Repository layer (доступ к БД и транзакции) для tg_shop_b
 - Денежные суммы считаются через Decimal.
 - Генерация номера заказа: ORDER-YYYYMMDD-<SEQ:id>
 """
-from __future__ import annotations
-import uuid
+
 import datetime
 from decimal import Decimal
-from typing import Iterable, List, Optional
+from typing import List, Optional
 
-from sqlalchemy import select, update, delete, func
+from sqlalchemy import select, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
+from app.core.logging_cfg import logger
 from app.db.models import (
     User,
     Category,
     Product,
-    ProductImage,
     Cart,
     CartItem,
     Order,
@@ -35,7 +36,9 @@ from app.db.models import (
     OrderStatus,
 )
 
-# -------- User --------
+# =========================
+# Пользователи
+# =========================
 class UserRepo:
     """Репозиторий пользователей."""
 
@@ -43,7 +46,9 @@ class UserRepo:
     async def get(session: AsyncSession, user_id: int) -> Optional[User]:
         """Получить пользователя по Telegram ID."""
         res = await session.execute(select(User).where(User.id == user_id))
-        return res.scalar_one_or_none()
+        user = res.scalar_one_or_none()
+        logger.debug("UserRepo.get: user_id=%s -> %s", user_id, bool(user))
+        return user
 
     @staticmethod
     async def get_or_create(session: AsyncSession, *, user_id: int, full_name: str | None = None) -> User:
@@ -52,266 +57,219 @@ class UserRepo:
         - если есть — возвращает;
         - если нет — создаёт запись c переданным full_name (может быть None).
         """
-        user = await UserRepo.get(session, user_id)
-        if user is None:
-            user = User(id=user_id, full_name=full_name)
-            session.add(user)
-            await session.flush()
+        res = await session.execute(select(User).where(User.id == user_id).limit(1))
+        user = res.scalar_one_or_none()
+        if user:
+            logger.debug("UserRepo.get_or_create: found user_id=%s", user_id)
+            return user
+
+        user = User(id=user_id, full_name=full_name or "")
+        session.add(user)
+        await session.flush()
+        logger.info("UserRepo.get_or_create: created user_id=%s full_name='%s'", user_id, full_name or "")
         return user
 
 
-# -------- Category --------
+# =========================
+# Категории / Товары
+# =========================
 class CategoryRepo:
-    """Репозиторий категорий товаров."""
-
     @staticmethod
     async def list_root(session: AsyncSession) -> List[Category]:
-        """Список корневых категорий (parent_id IS NULL)."""
-        stmt = select(Category).where(Category.parent_id.is_(None)).order_by(Category.title.asc())
-        result = await session.execute(stmt)
-        return result.scalars().all()
+        res = await session.execute(
+            select(Category).where(Category.parent_id.is_(None)).order_by(Category.id)
+        )
+        rows = res.scalars().all()
+        logger.debug("CategoryRepo.list_root: count=%s", len(rows))
+        return rows
 
     @staticmethod
-    async def list_children(session: AsyncSession, parent_id: int) -> List[Category]:
-        """Список подкатегорий по parent_id."""
-        stmt = select(Category).where(Category.parent_id == parent_id).order_by(Category.title.asc())
-        result = await session.execute(stmt)
-        return result.scalars().all()
-
-    @staticmethod
-    async def get(session: AsyncSession, category_id: int) -> Optional[Category]:
-        """Получить категорию по id."""
-        result = await session.execute(select(Category).where(Category.id == category_id))
-        return result.scalar_one_or_none()
-
-    @staticmethod
-    async def create(session: AsyncSession, *, title: str, slug: str | None = None,
-                     parent_id: int | None = None) -> Category:
-        """Создать категорию."""
-        obj = Category(title=title, slug=slug, parent_id=parent_id)
-        session.add(obj)
-        await session.flush()
-        return obj
-
-    @staticmethod
-    async def update(session: AsyncSession, category_id: int, **fields) -> Optional[Category]:
-        """Обновить категорию по id, вернуть обновлённый объект или None."""
-        await session.execute(update(Category).where(Category.id == category_id).values(**fields))
-        await session.flush()
-        return await CategoryRepo.get(session, category_id)
-
-    @staticmethod
-    async def delete(session: AsyncSession, category_id: int) -> None:
-        """Удалить категорию по id."""
-        await session.execute(delete(Category).where(Category.id == category_id))
-        await session.flush()
+    async def list_children(session: AsyncSession, *, parent_id: int) -> List[Category]:
+        res = await session.execute(
+            select(Category).where(Category.parent_id == parent_id).order_by(Category.id)
+        )
+        rows = res.scalars().all()
+        logger.debug("CategoryRepo.list_children: parent_id=%s count=%s", parent_id, len(rows))
+        return rows
 
 
-# -------- Product --------
 class ProductRepo:
-    """Репозиторий товаров."""
-
     @staticmethod
     async def get(session: AsyncSession, product_id: int) -> Optional[Product]:
-        """
-        Получить товар по id (с изображениями).
-
-        FIX: при joined eager загрузке коллекции images необходимо вызвать .unique()
-        перед scalar_one_or_none(), иначе SQLAlchemy поднимет InvalidRequestError.
-        """
-        stmt = (
+        res = await session.execute(
             select(Product)
+            .options(joinedload(Product.images))  # загрузка коллекции
             .where(Product.id == product_id)
-            .options(joinedload(Product.images))
+            .limit(1)
         )
-        result = await session.execute(stmt)
-        return result.unique().scalar_one_or_none()
+        # ВАЖНО: при joinedload коллекции нужно уникализировать строки результата
+        product = res.unique().scalar_one_or_none()
+        logger.debug("ProductRepo.get: product_id=%s -> %s", product_id, bool(product))
+        return product
 
     @staticmethod
     async def list_by_category(
-        session: AsyncSession, *,
-        category_id: int | None, limit: int = 20, offset: int = 0
-    ) -> List[Product]:
-        """Список активных товаров по категории (или без фильтра, если category_id=None)."""
-        stmt = select(Product).where(Product.is_active.is_(True))
-        if category_id is not None:
-            stmt = stmt.where(Product.category_id == category_id)
-        stmt = stmt.order_by(Product.created_at.desc()).limit(limit).offset(offset)
-        result = await session.execute(stmt)
-        return result.scalars().all()
-
-    @staticmethod
-    async def create(
         session: AsyncSession,
         *,
-        title: str,
-        price: Decimal,
-        currency: str = "EUR",
-        category_id: int | None = None,
-        description: str | None = None,
-        is_active: bool = True,
-        image_urls: Iterable[str] | None = None,
-    ) -> Product:
-        """Создать товар и, при необходимости, изображения."""
-        obj = Product(
-            title=title,
-            description=description,
-            price=price,
-            currency=currency,
-            category_id=category_id,
-            is_active=is_active,
+        category_id: int | None,
+        limit: int,
+        offset: int,
+    ) -> List[Product]:
+        q = select(Product).where(Product.is_active.is_(True)).order_by(Product.id)
+        if category_id is not None:
+            q = q.where(Product.category_id == category_id)
+
+        res = await session.execute(q.limit(limit).offset(offset))
+        rows = res.scalars().all()
+        logger.debug(
+            "ProductRepo.list_by_category: category_id=%s limit=%s offset=%s -> %s",
+            category_id, limit, offset, len(rows)
         )
-        session.add(obj)
-        await session.flush()
-
-        if image_urls:
-            for i, url in enumerate(image_urls):
-                session.add(ProductImage(product_id=obj.id, url=str(url), sort_order=i))
-            await session.flush()
-
-        return obj
-
-    @staticmethod
-    async def update(session: AsyncSession, product_id: int, **fields) -> Optional[Product]:
-        """Обновить товар и вернуть объект."""
-        await session.execute(update(Product).where(Product.id == product_id).values(**fields))
-        await session.flush()
-        return await ProductRepo.get(session, product_id)
-
-    @staticmethod
-    async def delete(session: AsyncSession, product_id: int) -> None:
-        """Удалить товар по id."""
-        await session.execute(delete(Product).where(Product.id == product_id))
-        await session.flush()
+        return rows
 
 
-# -------- Cart --------
+# =========================
+# Корзина
+# =========================
 class CartRepo:
-    """Репозиторий корзины пользователя."""
+    """Операции с корзиной пользователя."""
 
     @staticmethod
-    async def get_or_create_active_cart(session: AsyncSession, user_id: int) -> Cart:
-        """
-        Получить активную корзину пользователя или создать новую.
+    async def get_or_create_active_cart(session: AsyncSession, *, user_id: int) -> Cart:
+        # гарантируем пользователя (лениво)
+        user = await UserRepo.get_or_create(session, user_id=user_id)
 
-        Важно:
-        - Допускается ровно одна активная корзина на пользователя.
-        - Перед созданием корзины гарантируем наличие пользователя (FK на users.id).
-        """
-        # Гарантируем, что пользователь существует (иначе FK упадёт)
-        await UserRepo.get_or_create(session, user_id=user_id)
+        res = await session.execute(
+            select(Cart)
+            .where(Cart.user_id == user.id, Cart.status == CartStatus.ACTIVE)
+            .limit(1)
+        )
+        cart = res.scalar_one_or_none()
+        if cart:
+            logger.debug("CartRepo.get_or_create_active_cart: user_id=%s -> cart_id=%s", user_id, cart.id)
+            return cart
 
-        stmt = select(Cart).where(Cart.user_id == user_id, Cart.status == CartStatus.ACTIVE)
-        result = await session.execute(stmt)
-        cart = result.scalar_one_or_none()
-        if cart is None:
-            cart = Cart(user_id=user_id, status=CartStatus.ACTIVE)
-            session.add(cart)
-            await session.flush()
+        cart = Cart(user_id=user.id, status=CartStatus.ACTIVE)
+        session.add(cart)
+        await session.flush()
+        logger.info("CartRepo.get_or_create_active_cart: created cart_id=%s for user_id=%s", cart.id, user_id)
         return cart
 
     @staticmethod
-    async def add_item(session: AsyncSession, *, user_id: int, product_id: int, quantity: int = 1) -> CartItem:
-        """
-        Добавить позицию в корзину (или увеличить количество, если уже есть).
-
-        Правила:
-        - Цена фиксируется по текущей цене товара (price_at_added).
-        """
-        cart = await CartRepo.get_or_create_active_cart(session, user_id=user_id)
+    async def add_item(session: AsyncSession, *, user_id: int, product_id: int, quantity: int) -> CartItem:
+        # проверим товар
         product = await ProductRepo.get(session, product_id)
-        if product is None or not product.is_active:
-            raise ValueError("Товар не найден или неактивен")
-
-        # Есть ли уже такая позиция?
-        stmt = select(CartItem).where(CartItem.cart_id == cart.id, CartItem.product_id == product_id)
-        result = await session.execute(stmt)
-        item = result.scalar_one_or_none()
-
-        if item:
-            item.quantity += quantity
-        else:
-            item = CartItem(
-                cart_id=cart.id,
-                product_id=product_id,
-                quantity=quantity,
-                price_at_added=product.price,  # фиксируем текущую цену
+        if not product or not product.is_active:
+            logger.warning(
+                "CartRepo.add_item: product invalid/disabled product_id=%s user_id=%s", product_id, user_id
             )
-            session.add(item)
+            raise ValueError("Товар недоступен")
 
+        cart = await CartRepo.get_or_create_active_cart(session, user_id=user_id)
+
+        # ищем существующую позицию
+        res = await session.execute(
+            select(CartItem).where(CartItem.cart_id == cart.id, CartItem.product_id == product.id).limit(1)
+        )
+        item = res.scalar_one_or_none()
+        if item:
+            old = item.quantity
+            item.quantity = old + quantity
+            await session.flush()
+            logger.info(
+                "CartRepo.add_item: cart_id=%s product_id=%s qty %s -> %s",
+                cart.id, product.id, old, item.quantity
+            )
+            return item
+
+        item = CartItem(
+            cart_id=cart.id,
+            product_id=product.id,
+            quantity=quantity,
+            price_at_added=product.price,
+        )
+        session.add(item)
         await session.flush()
+        logger.info("CartRepo.add_item: cart_id=%s product_id=%s qty=%s CREATED", cart.id, product.id, quantity)
         return item
 
     @staticmethod
     async def set_quantity(session: AsyncSession, *, user_id: int, product_id: int, quantity: int) -> Optional[CartItem]:
-        """Установить точное количество позиции (quantity >= 0). Если 0 — удалить позицию."""
         cart = await CartRepo.get_or_create_active_cart(session, user_id=user_id)
-        stmt = select(CartItem).where(CartItem.cart_id == cart.id, CartItem.product_id == product_id)
-        result = await session.execute(stmt)
-        item = result.scalar_one_or_none()
-        if item is None:
+        res = await session.execute(
+            select(CartItem).where(CartItem.cart_id == cart.id, CartItem.product_id == product_id).limit(1)
+        )
+        item = res.scalar_one_or_none()
+        if not item:
+            logger.debug("CartRepo.set_quantity: no item cart_id=%s product_id=%s", cart.id, product_id)
             return None
+
         if quantity <= 0:
-            await session.delete(item)
+            await session.execute(delete(CartItem).where(CartItem.id == item.id))
             await session.flush()
+            logger.info("CartRepo.set_quantity: DELETE item_id=%s (qty<=0)", item.id)
             return None
+
+        old = item.quantity
         item.quantity = quantity
         await session.flush()
+        logger.info("CartRepo.set_quantity: item_id=%s qty %s -> %s", item.id, old, item.quantity)
         return item
 
     @staticmethod
     async def remove_item(session: AsyncSession, *, user_id: int, product_id: int) -> None:
-        """Удалить позицию из корзины."""
         cart = await CartRepo.get_or_create_active_cart(session, user_id=user_id)
-        await session.execute(
-            delete(CartItem).where(CartItem.cart_id == cart.id, CartItem.product_id == product_id)
+        res = await session.execute(
+            select(CartItem.id).where(CartItem.cart_id == cart.id, CartItem.product_id == product_id).limit(1)
         )
+        item_id = res.scalar_one_or_none()
+        if item_id is None:
+            logger.debug("CartRepo.remove_item: nothing to delete cart_id=%s product_id=%s", cart.id, product_id)
+            return
+        await session.execute(delete(CartItem).where(CartItem.id == item_id))
         await session.flush()
+        logger.info("CartRepo.remove_item: deleted item_id=%s", item_id)
 
     @staticmethod
     async def clear(session: AsyncSession, *, user_id: int) -> None:
-        """Очистить корзину целиком."""
         cart = await CartRepo.get_or_create_active_cart(session, user_id=user_id)
-        await session.execute(delete(CartItem).where(CartItem.cart_id == cart.id))
+        deleted = await session.execute(delete(CartItem).where(CartItem.cart_id == cart.id))
         await session.flush()
+        logger.info("CartRepo.clear: cart_id=%s cleared (rowcount=%s)", cart.id, deleted.rowcount)
 
     @staticmethod
     async def get_items(session: AsyncSession, *, user_id: int) -> List[CartItem]:
-        """Вернуть список позиций активной корзины пользователя."""
         cart = await CartRepo.get_or_create_active_cart(session, user_id=user_id)
-        stmt = (
+        res = await session.execute(
             select(CartItem)
-            .where(CartItem.cart_id == cart.id)
             .options(joinedload(CartItem.product))
-            .order_by(CartItem.id.asc())
+            .where(CartItem.cart_id == cart.id)
+            .order_by(CartItem.id)
         )
-        result = await session.execute(stmt)
-        return result.scalars().all()
+        items = res.scalars().all()
+        logger.debug("CartRepo.get_items: cart_id=%s items=%s", cart.id, len(items))
+        return items
 
     @staticmethod
     async def subtotal(session: AsyncSession, *, user_id: int) -> Decimal:
-        """
-        Посчитать сумму корзины: sum(quantity * price_at_added).
-
-        Возвращает Decimal с точностью БД.
-        """
         cart = await CartRepo.get_or_create_active_cart(session, user_id=user_id)
-        stmt = select(func.coalesce(func.sum(CartItem.quantity * CartItem.price_at_added), 0)).where(
-            CartItem.cart_id == cart.id
+        res = await session.execute(
+            select(func.coalesce(func.sum(CartItem.quantity * CartItem.price_at_added), 0)).where(
+                CartItem.cart_id == cart.id
+            )
         )
-        result = await session.execute(stmt)
-        total = result.scalar_one()
-        return Decimal(total)
+        total = Decimal(res.scalar_one() or 0)
+        logger.debug("CartRepo.subtotal: cart_id=%s total=%s", cart.id, total)
+        return total
 
 
-# -------- Order --------
+# =========================
+# Заказы
+# =========================
 class OrderRepo:
-    """Репозиторий заказов и создание заказа из корзины."""
-
     @staticmethod
-    async def generate_order_number(order_id: int, created_at: datetime.datetime | None = None) -> str:
-        """Сформировать номер заказа в формате ORDER-YYYYMMDD-<id>."""
-        created_at = created_at or datetime.datetime.utcnow()
+    async def generate_order_number(*, order_id: int, created_at: datetime.datetime) -> str:
+        # ORDER-YYYYMMDD-<id>
         return f"ORDER-{created_at.strftime('%Y%m%d')}-{order_id}"
 
     @staticmethod
@@ -325,31 +283,17 @@ class OrderRepo:
         delivery_type: str | None,
         currency: str = "EUR",
     ) -> Order:
-        """
-        Создать заказ из текущей активной корзины пользователя.
-
-        Алгоритм:
-        - Гарантировать наличие пользователя (на всякий случай).
-        - Получить активную корзину и её позиции.
-        - Посчитать сумму.
-        - Создать Order (без order_number), flush() -> получить id.
-        - Проставить order_number и создать OrderItem по каждой позиции.
-        - Очистить корзину и перевести её статус в ORDERED.
-        """
-        # 0) Гарантия существования пользователя
-        await UserRepo.get_or_create(session, user_id=user_id)
-
-        # 1) Корзина и позиции
+        # получаем активную корзину и её позиции
         cart = await CartRepo.get_or_create_active_cart(session, user_id=user_id)
         items = await CartRepo.get_items(session, user_id=user_id)
         if not items:
+            logger.warning("OrderRepo.create_from_cart: empty cart user_id=%s", user_id)
             raise ValueError("Корзина пуста")
 
-        # 2) Сумма
+        # считаем сумму
         total = await CartRepo.subtotal(session, user_id=user_id)
 
-        temp_number = f"TEMP-{uuid.uuid4().hex[:12]}"
-        # 3) Создаём заказ
+        # создаём «пустой» заказ для получения id и даты
         order = Order(
             user_id=user_id,
             status=OrderStatus.NEW,
@@ -359,63 +303,72 @@ class OrderRepo:
             contact_phone=contact_phone,
             address=address,
             delivery_type=delivery_type,
-            created_at=datetime.datetime.utcnow(),
-            order_number=temp_number,
         )
         session.add(order)
-        await session.flush()  # получаем order.id
-
-        order.order_number = await OrderRepo.generate_order_number(order.id, order.created_at)
-
-        # 4) Позиции заказа
-        for ci in items:
-            oi = OrderItem(
-                order_id=order.id,
-                product_id=ci.product_id,
-                quantity=ci.quantity,
-                item_price=ci.price_at_added,
-            )
-            session.add(oi)
-
-        # 5) Очистка корзины и смена статуса
-        await session.execute(delete(CartItem).where(CartItem.cart_id == cart.id))
-        cart.status = CartStatus.ORDERED
         await session.flush()
 
+        # финальный номер
+        order.order_number = await OrderRepo.generate_order_number(
+            order_id=order.id, created_at=order.created_at  # type: ignore[arg-type]
+        )
+        await session.flush()
+
+        # переносим все позиции корзины в order_items
+        created = 0
+        for it in items:
+            session.add(
+                OrderItem(
+                    order_id=order.id,
+                    product_id=it.product_id,
+                    quantity=it.quantity,
+                    item_price=it.price_at_added,
+                )
+            )
+            created += 1
+
+        # помечаем корзину как ORDERED и очищаем позиции
+        cart.status = CartStatus.ORDERED
+        await session.execute(delete(CartItem).where(CartItem.cart_id == cart.id))
+        await session.flush()
+
+        logger.info(
+            "OrderRepo.create_from_cart: order_id=%s user_id=%s items=%s total=%s %s",
+            order.id, user_id, created, total, currency
+        )
         return order
 
     @staticmethod
     async def get(session: AsyncSession, order_id: int) -> Optional[Order]:
-        """
-        Получить заказ по id (с позициями).
-
-        FIX: из-за joined eager загрузки коллекции items нужен вызов .unique()
-        перед scalar_one_or_none().
-        """
-        stmt = (
+        res = await session.execute(
             select(Order)
+            .options(
+                joinedload(Order.items).joinedload(OrderItem.product)  # коллекция items
+            )
             .where(Order.id == order_id)
-            .options(joinedload(Order.items).joinedload(OrderItem.product))
+            .limit(1)
         )
-        result = await session.execute(stmt)
-        return result.unique().scalar_one_or_none()
+        # ВАЖНО: при joinedload коллекции нужно уникализировать строки результата
+        order = res.unique().scalar_one_or_none()
+        logger.debug("OrderRepo.get: order_id=%s -> %s", order_id, bool(order))
+        return order
 
     @staticmethod
     async def list_for_admin(session: AsyncSession, *, limit: int = 50, offset: int = 0) -> List[Order]:
-        """Список заказов (для админ-панели)."""
-        stmt = (
-            select(Order)
-            .order_by(Order.created_at.desc())
-            .limit(limit)
-            .offset(offset)
+        res = await session.execute(
+            select(Order).order_by(Order.id.desc()).limit(limit).offset(offset)
         )
-        result = await session.execute(stmt)
-        return result.scalars().all()
+        rows = res.scalars().all()
+        logger.debug("OrderRepo.list_for_admin: limit=%s offset=%s -> %s", limit, offset, len(rows))
+        return rows
 
     @staticmethod
     async def set_status(session: AsyncSession, order_id: int, status: OrderStatus) -> Optional[Order]:
-        """Изменить статус заказа и вернуть обновлённый объект."""
-        stmt = update(Order).where(Order.id == order_id).values(status=status)
-        await session.execute(stmt)
+        order = await OrderRepo.get(session, order_id)
+        if not order:
+            logger.warning("OrderRepo.set_status: order not found order_id=%s", order_id)
+            return None
+        old = order.status
+        order.status = status
         await session.flush()
-        return await OrderRepo.get(session, order_id)
+        logger.info("OrderRepo.set_status: order_id=%s %s -> %s", order_id, old.value, status.value)
+        return order
