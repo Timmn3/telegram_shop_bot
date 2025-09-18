@@ -43,13 +43,13 @@ async def test_admin_change_order_status(async_session):
         delivery_type="courier",
         currency="EUR",
     )
-    assert order.status == OrderStatus.new
+    assert order.status == OrderStatus.NEW
 
     # Действие админа: смена статуса
-    updated = await OrderRepo.set_status(async_session, order_id=order.id, status=OrderStatus.processing)
+    updated = await OrderRepo.set_status(async_session, order_id=order.id, status=OrderStatus.PROCESSING)
     assert updated is not None
-    assert updated.status == OrderStatus.processing
+    assert updated.status == OrderStatus.PROCESSING
 
     # Перечитать напрямую из БД
     row = (await async_session.execute(select(Order).where(Order.id == order.id))).scalar_one()
-    assert row.status == OrderStatus.processing
+    assert row.status == OrderStatus.PROCESSING
