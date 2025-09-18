@@ -187,15 +187,19 @@ class ProductRepo:
 
     @staticmethod
     async def update_fields(
-            session,
+            session: AsyncSession,
             *,
             product_id: int,
             title: str | None = None,
             price: Decimal | None = None,
-            category_id: int | None = None,
-            description: str | None = None,
+            category_id: int | None | object = ...,
+            description: str | None | object = ...,
     ):
-        """Обновить указанные поля товара."""
+        """
+        Обновить указанные поля товара.
+        Если параметр не передан — поле остаётся без изменений.
+        category_id/description можно сбросить в None.
+        """
         from sqlalchemy import select
         from app.db.models import Product
 
@@ -208,9 +212,9 @@ class ProductRepo:
             product.title = title
         if price is not None:
             product.price = price
-        if description is not None or description is None:
+        if description is not ...:  # обновляем только если явно передан
             product.description = description
-        if category_id is not None or category_id is None:
+        if category_id is not ...:  # обновляем только если явно передан
             product.category_id = category_id
 
         await session.flush()
