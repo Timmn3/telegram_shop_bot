@@ -38,11 +38,17 @@ WORDS = [
 ]
 
 
-def random_title(kind: str = "Товар") -> str:
-    """Сгенерировать короткое название."""
-    base = random.choice(["Alpha", "Omega", "Nova", "Aero", "Pixel", "Quantum", "Nimbus", "Vertex", "Orion", "Atlas"])
+def random_title(kind: str | None = None) -> str:
+    """Сгенерировать короткое название товара или категории."""
+    base = random.choice([
+        "Alpha", "Omega", "Nova", "Aero", "Pixel",
+        "Quantum", "Nimbus", "Vertex", "Orion", "Atlas"
+    ])
     suf = random.choice(WORDS)
-    return f"{kind} {base} {suf}"
+    if kind:
+        return f"{kind} {base} {suf}"
+    return f"{base} {suf}"
+
 
 
 def random_slug(title: str) -> str:
