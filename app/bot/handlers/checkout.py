@@ -1,27 +1,6 @@
 """
 Оформление заказа (FSM) с навигацией «Назад» на каждом шаге.
 
-Сценарий:
-- Старт из корзины по callback "checkout:start"
-- Сбор данных: name → phone → address → delivery → confirm
-- На каждом шаге доступна кнопка «⬅️ Назад»:
-    name     → отмена (равно /cancel)
-    phone    → name
-    address  → phone
-    delivery → address
-    confirm  → delivery
-- Подтверждение: создание заказа, очистка FSM, уведомление админов.
-
-Зависимости:
-- app.services.cart_service / order_service
-- app.bot.keyboards.checkout_keyboard (клавиатуры и предпросмотр)
-- app.core.config.settings (ADMIN_ID_LIST)
-- app.core.logging_cfg.logger
-
-Примечания:
-- Все подсказки/валидации на русском.
-- При возврате на предыдущий шаг отображаем текущее сохранённое значение (если есть),
-  чтобы пользователь мог отредактировать или повторно ввести.
 """
 from __future__ import annotations
 

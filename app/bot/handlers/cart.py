@@ -1,11 +1,6 @@
 """
-Хэндлеры корзины:
-- Добавить в корзину (из карточки товара): "cart:add:<product_id>"
-- Просмотр корзины: /cart или callback "cart:view"
-- Изменение количества: "cart:inc:<product_id>", "cart:dec:<product_id>"
-- Удаление позиции: "cart:del:<product_id>"
-- Очистка: "cart:clear"
-- Переход к оформлению: "checkout:start" (заглушка — FSM добавим на следующем шаге)
+Хэндлеры корзины
+
 """
 from __future__ import annotations
 

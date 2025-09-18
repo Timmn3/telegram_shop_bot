@@ -1,4 +1,3 @@
-# app/db/repository.py
 from __future__ import annotations
 """
 Repository layer (доступ к БД и транзакции) для tg_shop_bot.

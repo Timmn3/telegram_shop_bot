@@ -1,4 +1,3 @@
-# app/bot/keyboards/checkout_keyboard.py
 """
 Клавиатуры и предпросмотр для Checkout FSM.
 """
