@@ -17,7 +17,7 @@ Repository layer (доступ к БД и транзакции) для tg_shop_b
 import datetime
 from decimal import Decimal
 from typing import List, Optional
-
+from datetime import datetime, UTC
 from sqlalchemy import select, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
@@ -340,8 +340,7 @@ class OrderRepo:
         # сумма
         total = await CartRepo.subtotal(session, user_id=user_id)
 
-        # временный номер (чтобы пройти NOT NULL + UNIQUE)
-        temp_number = f"TEMP-{int(datetime.datetime.utcnow().timestamp() * 1000)}-{user_id}"
+        temp_number = f"TEMP-{int(datetime.now(UTC).timestamp() * 1000)}-{user_id}"
 
         order = Order(
             order_number=temp_number,
