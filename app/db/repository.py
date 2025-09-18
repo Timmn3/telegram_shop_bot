@@ -28,6 +28,7 @@ from app.db.models import (
     User,
     Category,
     Product,
+    ProductImage,
     Cart,
     CartItem,
     Order,
@@ -75,6 +76,17 @@ class UserRepo:
 # =========================
 class CategoryRepo:
     @staticmethod
+    async def get(session: AsyncSession, category_id: int) -> Optional[Category]:
+        """
+        Получить категорию по id.
+        Нужен для валидации шага FSM в админке при вводе ID категории.
+        """
+        res = await session.execute(select(Category).where(Category.id == category_id).limit(1))
+        cat = res.scalar_one_or_none()
+        logger.debug("CategoryRepo.get: id=%s -> %s", category_id, bool(cat))
+        return cat
+
+    @staticmethod
     async def list_root(session: AsyncSession) -> List[Category]:
         res = await session.execute(
             select(Category).where(Category.parent_id.is_(None)).order_by(Category.id)
@@ -96,13 +108,16 @@ class CategoryRepo:
 class ProductRepo:
     @staticmethod
     async def get(session: AsyncSession, product_id: int) -> Optional[Product]:
+        """
+        Вернуть товар по id вместе с изображениями.
+        ВАЖНО: при joinedload коллекции нужен res.unique().
+        """
         res = await session.execute(
             select(Product)
-            .options(joinedload(Product.images))  # загрузка коллекции
+            .options(joinedload(Product.images))
             .where(Product.id == product_id)
             .limit(1)
         )
-        # ВАЖНО: при joinedload коллекции нужно уникализировать строки результата
         product = res.unique().scalar_one_or_none()
         logger.debug("ProductRepo.get: product_id=%s -> %s", product_id, bool(product))
         return product
@@ -115,10 +130,10 @@ class ProductRepo:
         limit: int,
         offset: int,
     ) -> List[Product]:
+        """Список активных товаров, опционально отфильтрованных по категории (пагинация)."""
         q = select(Product).where(Product.is_active.is_(True)).order_by(Product.id)
         if category_id is not None:
             q = q.where(Product.category_id == category_id)
-
         res = await session.execute(q.limit(limit).offset(offset))
         rows = res.scalars().all()
         logger.debug(
@@ -126,6 +141,33 @@ class ProductRepo:
             category_id, limit, offset, len(rows)
         )
         return rows
+
+    @staticmethod
+    async def create(
+        session: AsyncSession,
+        *,
+        title: str,
+        price: Decimal,
+        currency: str = "EUR",
+        category_id: int | None = None,
+        description: str | None = None,
+        is_active: bool = True,
+    ) -> Product:
+        """
+        Создать товар без изображений (изображения добавляются отдельно в ProductImage).
+        """
+        product = Product(
+            title=title,
+            description=description,
+            price=price,
+            currency=currency,
+            category_id=category_id,
+            is_active=is_active,
+        )
+        session.add(product)
+        await session.flush()
+        logger.info("ProductRepo.create: id=%s title=%r", product.id, product.title)
+        return product
 
 
 # =========================
@@ -156,41 +198,42 @@ class CartRepo:
         return cart
 
     @staticmethod
-    async def add_item(session: AsyncSession, *, user_id: int, product_id: int, quantity: int) -> CartItem:
-        # проверим товар
-        product = await ProductRepo.get(session, product_id)
-        if not product or not product.is_active:
-            logger.warning(
-                "CartRepo.add_item: product invalid/disabled product_id=%s user_id=%s", product_id, user_id
-            )
-            raise ValueError("Товар недоступен")
-
+    async def add_item(session: AsyncSession, *, user_id: int, product_id: int, quantity: int = 1) -> CartItem:
+        """
+        Добавить позицию в корзину (или увеличить количество).
+        Бросает ValueError, если товар не существует или не активен.
+        """
         cart = await CartRepo.get_or_create_active_cart(session, user_id=user_id)
 
-        # ищем существующую позицию
+        # Проверка существования/активности товара
+        res_prod = await session.execute(select(Product).where(Product.id == product_id).limit(1))
+        product = res_prod.scalar_one_or_none()
+        if not product or not product.is_active:
+            logger.warning("CartRepo.add_item: product invalid/disabled product_id=%s", product_id)
+            raise ValueError("Товар недоступен")
+
+        # Ищем существующую позицию
         res = await session.execute(
-            select(CartItem).where(CartItem.cart_id == cart.id, CartItem.product_id == product.id).limit(1)
+            select(CartItem).where(CartItem.cart_id == cart.id, CartItem.product_id == product_id).limit(1)
         )
         item = res.scalar_one_or_none()
         if item:
             old = item.quantity
             item.quantity = old + quantity
             await session.flush()
-            logger.info(
-                "CartRepo.add_item: cart_id=%s product_id=%s qty %s -> %s",
-                cart.id, product.id, old, item.quantity
-            )
+            logger.info("CartRepo.add_item: INC item_id=%s %s -> %s", item.id, old, item.quantity)
             return item
 
+        # Создаём новую позицию
         item = CartItem(
             cart_id=cart.id,
-            product_id=product.id,
+            product_id=product_id,
             quantity=quantity,
             price_at_added=product.price,
         )
         session.add(item)
         await session.flush()
-        logger.info("CartRepo.add_item: cart_id=%s product_id=%s qty=%s CREATED", cart.id, product.id, quantity)
+        logger.info("CartRepo.add_item: cart_id=%s product_id=%s qty=%s CREATED", cart.id, product_id, quantity)
         return item
 
     @staticmethod
@@ -288,22 +331,21 @@ class OrderRepo:
         Обходит NOT NULL у orders.order_number через временный уникальный номер, затем
         после flush() пересчитывает финальный номер ORDER-YYYYMMDD-<id>.
         """
-        # получаем активную корзину и её позиции
+        # активная корзина и позиции
         cart = await CartRepo.get_or_create_active_cart(session, user_id=user_id)
         items = await CartRepo.get_items(session, user_id=user_id)
         if not items:
             logger.warning("OrderRepo.create_from_cart: empty cart user_id=%s", user_id)
             raise ValueError("Корзина пуста")
 
-        # считаем сумму
+        # сумма
         total = await CartRepo.subtotal(session, user_id=user_id)
 
-        # 1) создаём заказ с ВРЕМЕННЫМ уникальным номером, чтобы пройти NOT NULL + UNIQUE
-        #    (после flush() получим id и created_at, пересчитаем на финальный)
+        # временный номер (чтобы пройти NOT NULL + UNIQUE)
         temp_number = f"TEMP-{int(datetime.datetime.utcnow().timestamp() * 1000)}-{user_id}"
 
         order = Order(
-            order_number=temp_number,  # временно
+            order_number=temp_number,
             user_id=user_id,
             status=OrderStatus.NEW,
             total_amount=total,
@@ -314,17 +356,16 @@ class OrderRepo:
             delivery_type=delivery_type,
         )
         session.add(order)
-        await session.flush()  # теперь есть order.id и order.created_at из БД
+        await session.flush()  # теперь есть order.id/created_at
 
-        # 2) финальный номер и обновление
+        # финальный номер
         final_number = await OrderRepo.generate_order_number(
             order_id=order.id, created_at=order.created_at  # type: ignore[arg-type]
         )
         order.order_number = final_number
         await session.flush()
 
-        # 3) переносим позиции корзины в order_items
-        created = 0
+        # перенос позиций корзины в order_items
         for it in items:
             session.add(
                 OrderItem(
@@ -334,16 +375,15 @@ class OrderRepo:
                     item_price=it.price_at_added,
                 )
             )
-            created += 1
 
-        # 4) помечаем корзину и очищаем её
+        # пометить корзину и очистить её
         cart.status = CartStatus.ORDERED
         await session.execute(delete(CartItem).where(CartItem.cart_id == cart.id))
         await session.flush()
 
         logger.info(
             "OrderRepo.create_from_cart: order_id=%s user_id=%s items=%s total=%s %s",
-            order.id, user_id, created, total, currency
+            order.id, user_id, len(items), total, currency
         )
         return order
 
@@ -351,13 +391,10 @@ class OrderRepo:
     async def get(session: AsyncSession, order_id: int) -> Optional[Order]:
         res = await session.execute(
             select(Order)
-            .options(
-                joinedload(Order.items).joinedload(OrderItem.product)  # коллекция items
-            )
+            .options(joinedload(Order.items).joinedload(OrderItem.product))
             .where(Order.id == order_id)
             .limit(1)
         )
-        # joinedload коллекции → уникализируем
         order = res.unique().scalar_one_or_none()
         logger.debug("OrderRepo.get: order_id=%s -> %s", order_id, bool(order))
         return order
