@@ -1,31 +1,28 @@
 """
 Клавиатуры админ-панели: меню, список заказов и статусы.
 """
+from __future__ import annotations
+
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.types import InlineKeyboardMarkup
-from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.types import InlineKeyboardButton
 from app.db.models import Order, OrderStatus
+
 
 def build_admin_menu_kb() -> InlineKeyboardMarkup:
     """Главное меню администратора."""
     kb = InlineKeyboardBuilder()
     kb.button(text="➕ Добавить товар", callback_data="admin:cmd:add")
+    kb.button(text="✏️ Редактировать товар", callback_data="admin:cmd:edit")
     kb.button(text="📦 Заказы", callback_data="admin:cmd:orders")
-    kb.adjust(2)
+    kb.adjust(2, 1)
     return kb.as_markup()
 
 
-# app/bot/keyboards/admin_keyboard.py
-from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.types import InlineKeyboardButton
-from app.db.models import Order
-
-def build_orders_page_kb(*, orders: list[Order], page: int, page_size: int, has_next: bool):
+def build_orders_page_kb(*, orders: list[Order], page: int, page_size: int, has_next: bool) -> InlineKeyboardMarkup:
     """
     Список заказов:
       — верхняя кнопка по заказу
-      — нижняя «Статус: ...» теперь ТАКЖЕ открывает карточку
+      — нижняя «Статус: …» также открывает карточку
       — пагинация внизу
     """
     kb = InlineKeyboardBuilder()
@@ -47,8 +44,6 @@ def build_orders_page_kb(*, orders: list[Order], page: int, page_size: int, has_
     kb.row(*nav)
 
     return kb.as_markup()
-
-
 
 
 def build_order_status_kb(*, order_id: int, current: OrderStatus) -> InlineKeyboardMarkup:

@@ -1,17 +1,7 @@
 from __future__ import annotations
 """
-Repository layer (доступ к БД и транзакции) для tg_shop_bot.
+Repository layer (доступ к БД и транзакции)
 
-Покрывает:
-- Пользователи (ленивое создание при первом обращении к корзине).
-- Категории и товары (чтение/CRUD).
-- Корзину (создание/получение активной, позиции, подсчёт суммы).
-- Заказ (создание из корзины) с генерацией order_number.
-
-Примечания:
-- Все операции рассчитаны на использование с AsyncSession.
-- Денежные суммы считаются через Decimal.
-- Генерация номера заказа: ORDER-YYYYMMDD-<SEQ:id>
 """
 
 import datetime
@@ -167,6 +157,57 @@ class ProductRepo:
         await session.flush()
         logger.info("ProductRepo.create: id=%s title=%r", product.id, product.title)
         return product
+
+    @staticmethod
+    async def update_fields(
+        session,
+        *,
+        product_id: int,
+        title: str | None = None,
+        price: Decimal | None = None,
+        category_id: int | None | None = None,
+        description: str | None | None = None,
+        is_active: bool | None = None,
+    ):
+        """
+        Точечное обновление полей товара. Возвращает обновлённый объект или None.
+        Любые параметры, равные None, пропускаются (не меняются).
+        """
+
+        res = await session.execute(select(Product).where(Product.id == product_id).limit(1))
+        product = res.scalar_one_or_none()
+        if not product:
+            logger.debug("ProductRepo.update_fields: not found product_id=%s", product_id)
+            return None
+
+        if title is not None:
+            product.title = title
+        if price is not None:
+            product.price = price
+        if description is not None or description is None:
+            product.description = description
+        if is_active is not None:
+            product.is_active = is_active
+        if category_id is not None or category_id is None:
+            product.category_id = category_id
+
+        await session.flush()
+        logger.info("ProductRepo.update_fields: updated product_id=%s", product_id)
+        return product
+
+    @staticmethod
+    async def replace_images(session, *, product_id: int, telegram_file_ids: list[str]) -> None:
+        """
+        Полная замена набора изображений товара. Старые удаляются, новые вставляются
+        с последовательным sort_order.
+        """
+
+        await session.execute(delete(ProductImage).where(ProductImage.product_id == product_id))
+        for idx, file_id in enumerate(telegram_file_ids):
+            session.add(ProductImage(product_id=product_id, telegram_file_id=file_id, sort_order=idx))
+        await session.flush()
+        logger.info("ProductRepo.replace_images: product_id=%s images=%s", product_id, len(telegram_file_ids))
+
 
 
 # =========================
