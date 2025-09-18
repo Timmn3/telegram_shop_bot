@@ -108,14 +108,6 @@ async def admin_orders_page(callback: CallbackQuery) -> None:
 
 @admin_router.callback_query(AdminOnly(), F.data.startswith("admin:order:status:"))
 async def admin_order_set_status(callback: CallbackQuery) -> None:
-    """
-    Смена статуса заказа: admin:order:status:<order_id>:<status>.
-
-    Логика:
-    - Открываем ОДНУ транзакцию и внутри неё делаем и чтение, и возможное обновление.
-    - Если выбран тот же статус — ничего не сохраняем и отвечаем без текста.
-    - Если статус меняется — фиксируем транзакцию, перерисовываем клавиатуру и даём уведомление.
-    """
     try:
         _, _, _, oid, status_str = callback.data.split(":")
         order_id = int(oid)
@@ -125,32 +117,69 @@ async def admin_order_set_status(callback: CallbackQuery) -> None:
         return
 
     async with AsyncSessionFactory() as session:
-        async with session.begin():  # один begin на весь блок
+        async with session.begin():
             order = await OrderRepo.get(session, order_id)
             if not order:
-                # внутри begin можно просто бросить исключение/вернуть — СА сам откатит
                 await callback.answer("Заказ не найден", show_alert=True)
                 return
 
             if order.status == new_status:
-                # Перерисуем клавиатуру, но без всплывашки «обновлён»
-                kb = build_order_status_kb(order_id=order.id, current=order.status)
+                # Ничего не меняем — просто перерисуем клавиатуру (на случай, если пришли из другого окна)
+                kb_same = build_order_status_kb(order_id=order.id, current=order.status)
                 if callback.message:
-                    await callback.message.edit_reply_markup(reply_markup=kb)
-                await callback.answer()  # пустой ответ — телега снимет «часики»
+                    await callback.message.edit_reply_markup(reply_markup=kb_same)
+                await callback.answer()  # без текста
                 return
 
-            # Меняем статус; внутри той же транзакции — лишних begin нет
             updated = await OrderRepo.set_status(session, order_id, new_status)
-            # При необходимости можно session.flush() или await session.refresh(updated)
 
-    # Вне транзакции — рисуем UI и шлём уведомление
-    kb = build_order_status_kb(order_id=updated.id, current=updated.status)
-    await callback.message.answer(
-        f"Заказ {updated.order_number}: статус → <b>{updated.status.value}</b>",
-        reply_markup=kb,
-    )
+    # Обновляем текст и клавиатуру карточки заказа (то самое «новое окно»)
+    if callback.message:
+        text = (
+            f"📦 Заказ <b>{updated.order_number}</b>\n"
+            f"Статус: <b>{updated.status.value}</b>\n"
+            f"Сумма: {updated.total_amount} {updated.currency}\n"
+            f"Имя: {updated.contact_name}\n"
+            f"Телефон: {updated.contact_phone}\n"
+            f"Адрес: {updated.address or '—'}\n"
+            f"Доставка: {updated.delivery_type or '—'}"
+        )
+        kb = build_order_status_kb(order_id=updated.id, current=updated.status)
+        await callback.message.edit_text(text, reply_markup=kb)
+
     await callback.answer("Статус обновлён")
+
+@admin_router.callback_query(AdminOnly(), F.data.startswith("admin:order:open:"))
+async def admin_order_open(callback: CallbackQuery):
+    """Открыть заказ отдельным сообщением с кнопками статуса."""
+    try:
+        order_id = int(callback.data.split(":")[3])
+    except Exception:
+        await callback.answer("Некорректный id", show_alert=True)
+        return
+
+    async with AsyncSessionFactory() as session:
+        order = await OrderRepo.get(session, order_id)
+    if not order:
+        await callback.answer("Заказ не найден", show_alert=True)
+        return
+
+    text = (
+        f"📦 Заказ <b>{order.order_number}</b>\n"
+        f"Статус: <b>{order.status.value}</b>\n"
+        f"Сумма: {order.total_amount} {order.currency}\n"
+        f"Имя: {order.contact_name}\n"
+        f"Телефон: {order.contact_phone}\n"
+        f"Адрес: {order.address or '—'}\n"
+        f"Доставка: {order.delivery_type or '—'}"
+    )
+    kb = build_order_status_kb(order_id=order.id, current=order.status)
+    await callback.message.answer(text, reply_markup=kb)
+    await callback.answer()
+
+@admin_router.callback_query(AdminOnly(), F.data == "admin:noop")
+async def admin_noop(callback: CallbackQuery) -> None:
+    await callback.answer()
 
 
 # ===========================

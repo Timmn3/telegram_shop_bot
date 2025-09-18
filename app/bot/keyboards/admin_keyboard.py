@@ -1,15 +1,11 @@
-# app/bot/keyboards/admin_keyboard.py
 """
 Клавиатуры админ-панели: меню, список заказов и статусы.
 """
-from __future__ import annotations
-
-from typing import Iterable
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import InlineKeyboardMarkup
-
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import InlineKeyboardButton
 from app.db.models import Order, OrderStatus
-
 
 def build_admin_menu_kb() -> InlineKeyboardMarkup:
     """Главное меню администратора."""
@@ -20,32 +16,45 @@ def build_admin_menu_kb() -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def build_orders_page_kb(*, orders: Iterable[Order], page: int, page_size: int, has_next: bool) -> InlineKeyboardMarkup:
+def build_orders_page_kb(*, orders: list[Order], page: int, page_size: int, has_next: bool):
     """
-    Список заказов: на строку — номер и кнопка смены статуса (отдельным сообщением).
+    Клавиатура списка заказов.
+    На каждый заказ — 2 кнопки:
+      1) Открыть карточку: admin:order:open:<order_id>
+      2) Показать статус (no-op): admin:noop
     Внизу — пагинация.
     """
     kb = InlineKeyboardBuilder()
-    has_any = False
-    for o in orders:
-        has_any = True
-        kb.button(text=f"{o.order_number} — {o.total_amount} {o.currency}", callback_data="noop")
-        kb.button(text=f"Статус: {o.status.value}", callback_data=f"admin:order:status:{o.id}:{o.status.value}")
-        kb.adjust(1, 1)
-    if not has_any:
-        kb.button(text="Заказов нет", callback_data="noop")
-        kb.adjust(1)
 
-    nav = InlineKeyboardBuilder()
+    if not orders:
+        kb.row(InlineKeyboardButton(text="Нет заказов", callback_data="admin:noop"))
+    else:
+        for o in orders:
+            title = f"{o.order_number} — {o.total_amount} {o.currency}"
+            kb.row(
+                InlineKeyboardButton(
+                    text=title,
+                    callback_data=f"admin:order:open:{o.id}",
+                )
+            )
+            kb.row(
+                InlineKeyboardButton(
+                    text=f"Статус: {o.status.value}",
+                    callback_data="admin:noop",
+                )
+            )
+
+    # пагинация
+    nav = []
     if page > 0:
-        nav.button(text="◀️", callback_data=f"admin:orders:page:{page-1}:{page_size}")
-    nav.button(text=f"Стр. {page+1}", callback_data="noop")
+        nav.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:orders:page:{page-1}:{page_size}"))
+    nav.append(InlineKeyboardButton(text=f"Стр. {page+1}", callback_data="admin:noop"))
     if has_next:
-        nav.button(text="▶️", callback_data=f"admin:orders:page:{page+1}:{page_size}")
+        nav.append(InlineKeyboardButton(text="Вперёд ➡️", callback_data=f"admin:orders:page:{page+1}:{page_size}"))
+    kb.row(*nav)
 
-    # FIX: прикрепляем билдер навигации, не оборачивая разметку
-    kb.attach(nav)
     return kb.as_markup()
+
 
 
 def build_order_status_kb(*, order_id: int, current: OrderStatus) -> InlineKeyboardMarkup:
