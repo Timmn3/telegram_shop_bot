@@ -283,6 +283,11 @@ class OrderRepo:
         delivery_type: str | None,
         currency: str = "EUR",
     ) -> Order:
+        """
+        Создать заказ из активной корзины пользователя.
+        Обходит NOT NULL у orders.order_number через временный уникальный номер, затем
+        после flush() пересчитывает финальный номер ORDER-YYYYMMDD-<id>.
+        """
         # получаем активную корзину и её позиции
         cart = await CartRepo.get_or_create_active_cart(session, user_id=user_id)
         items = await CartRepo.get_items(session, user_id=user_id)
@@ -293,8 +298,12 @@ class OrderRepo:
         # считаем сумму
         total = await CartRepo.subtotal(session, user_id=user_id)
 
-        # создаём «пустой» заказ для получения id и даты
+        # 1) создаём заказ с ВРЕМЕННЫМ уникальным номером, чтобы пройти NOT NULL + UNIQUE
+        #    (после flush() получим id и created_at, пересчитаем на финальный)
+        temp_number = f"TEMP-{int(datetime.datetime.utcnow().timestamp() * 1000)}-{user_id}"
+
         order = Order(
+            order_number=temp_number,  # временно
             user_id=user_id,
             status=OrderStatus.NEW,
             total_amount=total,
@@ -305,15 +314,16 @@ class OrderRepo:
             delivery_type=delivery_type,
         )
         session.add(order)
-        await session.flush()
+        await session.flush()  # теперь есть order.id и order.created_at из БД
 
-        # финальный номер
-        order.order_number = await OrderRepo.generate_order_number(
+        # 2) финальный номер и обновление
+        final_number = await OrderRepo.generate_order_number(
             order_id=order.id, created_at=order.created_at  # type: ignore[arg-type]
         )
+        order.order_number = final_number
         await session.flush()
 
-        # переносим все позиции корзины в order_items
+        # 3) переносим позиции корзины в order_items
         created = 0
         for it in items:
             session.add(
@@ -326,7 +336,7 @@ class OrderRepo:
             )
             created += 1
 
-        # помечаем корзину как ORDERED и очищаем позиции
+        # 4) помечаем корзину и очищаем её
         cart.status = CartStatus.ORDERED
         await session.execute(delete(CartItem).where(CartItem.cart_id == cart.id))
         await session.flush()
@@ -347,7 +357,7 @@ class OrderRepo:
             .where(Order.id == order_id)
             .limit(1)
         )
-        # ВАЖНО: при joinedload коллекции нужно уникализировать строки результата
+        # joinedload коллекции → уникализируем
         order = res.unique().scalar_one_or_none()
         logger.debug("OrderRepo.get: order_id=%s -> %s", order_id, bool(order))
         return order
