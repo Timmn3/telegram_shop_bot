@@ -1,16 +1,20 @@
-"""
-Тесты корзины: добавление товара и подсчёт суммы.
-"""
-import pytest
 from decimal import Decimal
+
+import pytest
 from sqlalchemy import insert, select
 
-from app.db.models import Category, Product, User
-from app.services.cart_service import add_item, subtotal, list_items
+from app.db.models import User, Category, Product
+from app.services.cart_service import add_item, list_items, subtotal
 
 
 @pytest.mark.asyncio
 async def test_add_and_subtotal(async_session):
+    """
+    Проверяет:
+    - добавление двух одинаковых товаров в корзину;
+    - агрегацию количества до 2;
+    - корректный подсчёт subtotal.
+    """
     # Arrange: создаём пользователя, категорию и товар
     async with async_session.begin():
         await async_session.execute(
@@ -24,7 +28,7 @@ async def test_add_and_subtotal(async_session):
             insert(Product).values(
                 title="Laptop X",
                 description="Тестовый ноутбук",
-                price=Decimal("9999.90"),
+                price=Decimal("999.90"),   # <-- раньше было 9999.90, из-за чего subtotal x10
                 currency="RUB",
                 category_id=category_id,
                 is_active=True,
@@ -33,7 +37,7 @@ async def test_add_and_subtotal(async_session):
         # получим id продукта
         pid = (await async_session.execute(select(Product.id))).scalar_one()
 
-    # Act: добавляем 2шт и считаем сумму
+    # Act: добавляем 2 шт и считаем сумму
     await add_item(async_session, user_id=111, product_id=pid, quantity=1)
     await add_item(async_session, user_id=111, product_id=pid, quantity=1)
 
