@@ -16,13 +16,17 @@ def build_admin_menu_kb() -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
+# app/bot/keyboards/admin_keyboard.py
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import InlineKeyboardButton
+from app.db.models import Order
+
 def build_orders_page_kb(*, orders: list[Order], page: int, page_size: int, has_next: bool):
     """
-    Клавиатура списка заказов.
-    На каждый заказ — 2 кнопки:
-      1) Открыть карточку: admin:order:open:<order_id>
-      2) Показать статус (no-op): admin:noop
-    Внизу — пагинация.
+    Список заказов:
+      — верхняя кнопка по заказу
+      — нижняя «Статус: ...» теперь ТАКЖЕ открывает карточку
+      — пагинация внизу
     """
     kb = InlineKeyboardBuilder()
 
@@ -31,20 +35,9 @@ def build_orders_page_kb(*, orders: list[Order], page: int, page_size: int, has_
     else:
         for o in orders:
             title = f"{o.order_number} — {o.total_amount} {o.currency}"
-            kb.row(
-                InlineKeyboardButton(
-                    text=title,
-                    callback_data=f"admin:order:open:{o.id}",
-                )
-            )
-            kb.row(
-                InlineKeyboardButton(
-                    text=f"Статус: {o.status.value}",
-                    callback_data="admin:noop",
-                )
-            )
+            kb.row(InlineKeyboardButton(text=title, callback_data=f"admin:order:open:{o.id}"))
+            kb.row(InlineKeyboardButton(text=f"Статус: {o.status.value}", callback_data=f"admin:order:open:{o.id}"))
 
-    # пагинация
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:orders:page:{page-1}:{page_size}"))
@@ -54,6 +47,7 @@ def build_orders_page_kb(*, orders: list[Order], page: int, page_size: int, has_
     kb.row(*nav)
 
     return kb.as_markup()
+
 
 
 
